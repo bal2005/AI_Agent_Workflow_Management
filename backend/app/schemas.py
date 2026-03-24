@@ -66,3 +66,46 @@ class LLMConfigOut(BaseModel):
     is_active: bool
     created_at: datetime
     model_config = {"from_attributes": True}
+
+
+# ── Tools Management schemas ──────────────────────────────────────────────────
+
+class ToolPermissionOut(BaseModel):
+    id: int
+    key: str
+    label: str
+    model_config = {"from_attributes": True}
+
+
+class ToolOut(BaseModel):
+    id: int
+    key: str
+    name: str
+    description: Optional[str] = None
+    risk_level: Optional[str] = "low"
+    metadata_: Optional[dict] = None
+    permissions: list[ToolPermissionOut] = []
+    model_config = {"from_attributes": True}
+
+
+class AgentToolAccessOut(BaseModel):
+    id: int
+    agent_id: int
+    tool_id: int
+    tool_key: str                        # convenience — avoids extra join on frontend
+    granted_permissions: list[str] = []
+    config: Optional[dict] = None
+    model_config = {"from_attributes": True}
+
+
+class AgentToolAccessUpsert(BaseModel):
+    """Payload for saving/updating tool access for one agent."""
+    # List of (tool_key, [permission_keys], config_dict) entries
+    tool_key: str
+    granted_permissions: list[str] = []
+    config: Optional[dict] = None
+
+
+class AgentToolAccessBulkSave(BaseModel):
+    """Save all tool permissions for an agent in one call."""
+    entries: list[AgentToolAccessUpsert]

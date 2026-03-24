@@ -21,3 +21,14 @@ export const createLLMConfig = (payload) => api.post("/llm-configs/", payload).t
 export const updateLLMConfig = (id, payload) => api.patch(`/llm-configs/${id}`, payload).then(r => r.data);
 export const activateLLMConfig = (id) => api.post(`/llm-configs/${id}/activate`).then(r => r.data);
 export const deleteLLMConfig = (id) => api.delete(`/llm-configs/${id}`);
+
+// Tools Management
+export const fetchTools = () => api.get("/tools/").then(r => r.data);
+export const fetchAgentsByDomain = (domainId) => api.get(`/tools/domains/${domainId}/agents`).then(r => r.data);
+export const fetchAgentToolAccess = (agentId) => api.get(`/tools/agents/${agentId}/access`).then(r => r.data);
+export const saveAgentToolAccess = (agentId, entries) =>
+  api.put(`/tools/agents/${agentId}/access`, { entries }).then(r => r.data);
+
+// Task Playground
+export const runTaskPlayground = (payload) =>
+  api.post("/task-playground/run", payload).then(r => r.data);

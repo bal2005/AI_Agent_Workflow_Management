@@ -3,13 +3,14 @@ import AgentCreationPage from "./components/AgentCreationPage";
 import SidePanel from "./components/SidePanel";
 import LLMConfigPage from "./components/LLMConfigPage";
 import ToolsManagementPage from "./components/ToolsManagementPage";
+import TaskPlaygroundPage from "./components/TaskPlaygroundPage";
 import { fetchDomains, fetchAgents, fetchLLMConfigs } from "./api";
 
 export default function App() {
   const [domains, setDomains] = useState([]);
   const [agents, setAgents] = useState([]);
   const [selectedAgent, setSelectedAgent] = useState(null);
-  const [page, setPage] = useState("agent"); // "agent" | "llm" | "tools"
+  const [page, setPage] = useState("agent"); // "agent" | "llm" | "tools" | "tasks"
   const [activeLLMConfig, setActiveLLMConfig] = useState(null);
 
   const refresh = async () => {
@@ -37,6 +38,7 @@ export default function App() {
           onSelectAgent={setSelectedAgent}
           selectedAgent={selectedAgent}
           onOpenTools={() => setPage("tools")}
+          onOpenTasks={() => setPage("tasks")}
         />
       )}
       <main style={{ flex: 1, overflowY: "auto" }}>
@@ -51,8 +53,10 @@ export default function App() {
           />
         ) : page === "llm" ? (
           <LLMConfigPage onBack={() => { setPage("agent"); refresh(); }} />
-        ) : (
+        ) : page === "tools" ? (
           <ToolsManagementPage onBack={() => setPage("agent")} />
+        ) : (
+          <TaskPlaygroundPage onBack={() => setPage("agent")} />
         )}
       </main>
     </div>

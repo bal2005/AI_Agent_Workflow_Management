@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 from app import models, schemas
 from app.database import get_db
+from app.crypto import decrypt
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -28,6 +29,7 @@ async def create_agent(
     name: str = Form(...),
     domain_id: int = Form(...),
     system_prompt: Optional[str] = Form(None),
+    skill: Optional[str] = Form(None),  # frontend sends "skill", alias for system_prompt
     md_file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
 ):
@@ -37,7 +39,7 @@ async def create_agent(
         raise HTTPException(status_code=404, detail="Domain not found")
 
     md_filename = None
-    final_prompt = system_prompt or ""
+    final_prompt = system_prompt or skill or ""
 
     if md_file:
         if not md_file.filename.endswith(".md"):
@@ -71,7 +73,6 @@ async def create_agent(
 
 @router.post("/playground")
 def run_playground(payload: schemas.PlaygroundRequest, db: Session = Depends(get_db)):
-    # Resolve which config to use
     config = None
     if payload.llm_config_id:
         config = db.query(models.LLMConfig).filter(models.LLMConfig.id == payload.llm_config_id).first()
@@ -86,17 +87,20 @@ def run_playground(payload: schemas.PlaygroundRequest, db: Session = Depends(get
             )
         }
 
+    # Decrypt API key before sending to provider
+    if config.api_key:
+        config.api_key = decrypt(config.api_key)
+
     if config.provider == "ollama":
         return _run_ollama(config, payload.system_prompt, payload.user_prompt)
 
     if config.provider == "claude":
         return _run_claude(config, payload.system_prompt, payload.user_prompt)
 
-    # openai / gemini (openai-compat) / custom — all use the OpenAI chat completions format
     return _run_openai_compat(config, payload.system_prompt, payload.user_prompt)
 
 
-# ── OpenAI-compatible (OpenAI, Groq, Together, custom, Gemini OpenAI-compat) ──
+# ── OpenAI-compatible (OpenAI, Groq, Together, custom, Gemini) ────────────────
 
 def _run_openai_compat(config: models.LLMConfig, system_prompt: str, user_prompt: str) -> dict:
     import httpx
@@ -109,7 +113,6 @@ def _run_openai_compat(config: models.LLMConfig, system_prompt: str, user_prompt
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-
     body: dict = {
         "model": model,
         "messages": [
@@ -125,15 +128,9 @@ def _run_openai_compat(config: models.LLMConfig, system_prompt: str, user_prompt
         body["max_tokens"] = config.max_tokens
 
     try:
-        resp = httpx.post(
-            f"{base_url}/chat/completions",
-            headers=headers,
-            json=body,
-            timeout=60,
-        )
+        resp = httpx.post(f"{base_url}/chat/completions", headers=headers, json=body, timeout=60)
         resp.raise_for_status()
-        data = resp.json()
-        return {"result": data["choices"][0]["message"]["content"]}
+        return {"result": resp.json()["choices"][0]["message"]["content"]}
     except httpx.ConnectError:
         return {"result": f"[Connection error] Could not reach {base_url}"}
     except httpx.HTTPStatusError as e:
@@ -146,7 +143,7 @@ def _run_openai_compat(config: models.LLMConfig, system_prompt: str, user_prompt
         return {"result": f"[Error] {str(e)}"}
 
 
-# ── Ollama (/api/chat) ──
+# ── Ollama ────────────────────────────────────────────────────────────────────
 
 def _run_ollama(config: models.LLMConfig, system_prompt: str, user_prompt: str) -> dict:
     import httpx
@@ -184,7 +181,7 @@ def _run_ollama(config: models.LLMConfig, system_prompt: str, user_prompt: str) 
         return {"result": f"[Ollama error] {str(e)}"}
 
 
-# ── Anthropic Claude ──
+# ── Anthropic Claude ──────────────────────────────────────────────────────────
 
 def _run_claude(config: models.LLMConfig, system_prompt: str, user_prompt: str) -> dict:
     import httpx
@@ -198,7 +195,6 @@ def _run_claude(config: models.LLMConfig, system_prompt: str, user_prompt: str) 
         "anthropic-version": "2023-06-01",
         "Content-Type": "application/json",
     }
-
     body: dict = {
         "model": model,
         "system": system_prompt,
