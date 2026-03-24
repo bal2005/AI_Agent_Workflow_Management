@@ -26,7 +26,7 @@ const s = {
   noData: { padding: "16px 18px", fontSize: 12, color: "#475569" },
 };
 
-export default function SidePanel({ domains, agents, onSelectAgent, selectedAgent }) {
+export default function SidePanel({ domains, agents, onSelectAgent, selectedAgent, onOpenTools }) {
   const [openDomains, setOpenDomains] = useState({});
 
   const toggle = (id) =>
@@ -39,6 +39,19 @@ export default function SidePanel({ domains, agents, onSelectAgent, selectedAgen
   return (
     <aside style={s.panel}>
       <div style={s.header}>Domains & Agents</div>
+
+      <div
+        onClick={onOpenTools}
+        style={{
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "9px 18px", cursor: "pointer", fontSize: 13,
+          color: "#818cf8", borderBottom: "1px solid #1e2130", marginBottom: 8,
+        }}
+        onMouseEnter={e => e.currentTarget.style.background = "#1a1d2e"}
+        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+      >
+        <span>🔧</span> Tools Management
+      </div>
 
       {domains.length === 0 ? (
         <div style={s.noData}>No domains yet. Add one above.</div>

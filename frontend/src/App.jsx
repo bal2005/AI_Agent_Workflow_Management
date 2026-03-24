@@ -2,13 +2,14 @@ import React, { useState, useEffect } from "react";
 import AgentCreationPage from "./components/AgentCreationPage";
 import SidePanel from "./components/SidePanel";
 import LLMConfigPage from "./components/LLMConfigPage";
+import ToolsManagementPage from "./components/ToolsManagementPage";
 import { fetchDomains, fetchAgents, fetchLLMConfigs } from "./api";
 
 export default function App() {
   const [domains, setDomains] = useState([]);
   const [agents, setAgents] = useState([]);
   const [selectedAgent, setSelectedAgent] = useState(null);
-  const [page, setPage] = useState("agent"); // "agent" | "llm"
+  const [page, setPage] = useState("agent"); // "agent" | "llm" | "tools"
   const [activeLLMConfig, setActiveLLMConfig] = useState(null);
 
   const refresh = async () => {
@@ -35,6 +36,7 @@ export default function App() {
           agents={agents}
           onSelectAgent={setSelectedAgent}
           selectedAgent={selectedAgent}
+          onOpenTools={() => setPage("tools")}
         />
       )}
       <main style={{ flex: 1, overflowY: "auto" }}>
@@ -47,8 +49,10 @@ export default function App() {
             onOpenLLMConfig={() => setPage("llm")}
             activeLLMConfig={activeLLMConfig}
           />
-        ) : (
+        ) : page === "llm" ? (
           <LLMConfigPage onBack={() => { setPage("agent"); refresh(); }} />
+        ) : (
+          <ToolsManagementPage onBack={() => setPage("agent")} />
         )}
       </main>
     </div>

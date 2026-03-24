@@ -32,9 +32,13 @@ class AgentOut(BaseModel):
 
 # Playground schema
 class PlaygroundRequest(BaseModel):
-    system_prompt: str
+    system_prompt: str   # the agent's skill/instructions
     user_prompt: str
     llm_config_id: Optional[int] = None
+
+class PlaygroundResponse(BaseModel):
+    result: str
+    engine: str = "direct"  # "copilot-sdk" | "direct" | "none"
 
 # LLM Config schemas
 class LLMConfigCreate(BaseModel):

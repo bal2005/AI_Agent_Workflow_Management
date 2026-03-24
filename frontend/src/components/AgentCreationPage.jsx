@@ -57,6 +57,7 @@ export default function AgentCreationPage({ domains, onRefresh, prefillAgent, on
 
   const [userPrompt, setUserPrompt] = useState("");
   const [playgroundResult, setPlaygroundResult] = useState("");
+  const [playgroundEngine, setPlaygroundEngine] = useState(null); // "copilot-sdk" | "direct" | null
   const [playgroundLoading, setPlaygroundLoading] = useState(false);
 
   const [submitError, setSubmitError] = useState("");
@@ -134,12 +135,14 @@ export default function AgentCreationPage({ domains, onRefresh, prefillAgent, on
       setFormErrors(f => ({ ...f, userPrompt: "User prompt is required" }));
       return;
     }
-    setPlaygroundLoading(true); setPlaygroundResult("");
+    setPlaygroundLoading(true); setPlaygroundResult(""); setPlaygroundEngine(null);
     try {
       const data = await runPlayground(effectivePrompt, userPrompt, activeLLMConfig?.id || null);
       setPlaygroundResult(data.result);
+      setPlaygroundEngine(data.engine || "direct");
     } catch (e) {
       setPlaygroundResult(`Error: ${e.response?.data?.detail || e.message}`);
+      setPlaygroundEngine(null);
     } finally {
       setPlaygroundLoading(false);
     }
@@ -154,7 +157,7 @@ export default function AgentCreationPage({ domains, onRefresh, prefillAgent, on
     const fd = new FormData();
     fd.append("name", agentName.trim());
     fd.append("domain_id", selectedDomainId);
-    if (promptMode === "text") fd.append("system_prompt", systemPrompt.trim());
+    if (promptMode === "text") fd.append("skill", systemPrompt.trim());
     if (promptMode === "file" && mdFile) fd.append("md_file", mdFile);
 
     try {
@@ -217,10 +220,10 @@ export default function AgentCreationPage({ domains, onRefresh, prefillAgent, on
           {formErrors.name && <div style={s.error}>{formErrors.name}</div>}
         </div>
 
-        {/* System Prompt — text or file */}
+        {/* Skill — text or file */}
         <div style={s.fieldGroup}>
           <div style={{ ...s.row, alignItems: "center", marginBottom: 10 }}>
-            <label style={{ ...s.label, marginBottom: 0, flex: 1 }}>System Prompt</label>
+            <label style={{ ...s.label, marginBottom: 0, flex: 1 }}>Skill</label>
             <div style={s.tabRow}>
               <button style={{ ...s.tab, ...(promptMode === "text" ? s.tabActive : {}) }} onClick={() => setPromptMode("text")}>Text</button>
               <button style={{ ...s.tab, ...(promptMode === "file" ? s.tabActive : {}) }} onClick={() => setPromptMode("file")}>Upload .md</button>
@@ -230,7 +233,7 @@ export default function AgentCreationPage({ domains, onRefresh, prefillAgent, on
           {promptMode === "text" ? (
             <>
               <textarea style={{ ...s.textarea, ...(formErrors.systemPrompt ? s.inputError : {}) }}
-                placeholder="You are a helpful assistant that..."
+                placeholder="Describe what this agent can do and how it should behave..."
                 value={systemPrompt} onChange={e => { setSystemPrompt(e.target.value); setFormErrors(f => ({ ...f, systemPrompt: "" })); }} />
               {formErrors.systemPrompt && <div style={s.error}>{formErrors.systemPrompt}</div>}
             </>
@@ -284,9 +287,19 @@ export default function AgentCreationPage({ domains, onRefresh, prefillAgent, on
         </div>
 
         <div style={s.fieldGroup}>
-          <label style={s.label}>Result</label>
+          <div style={{ ...s.row, alignItems: "center", marginBottom: 6 }}>
+            <label style={{ ...s.label, marginBottom: 0, flex: 1 }}>Result</label>
+            {playgroundEngine === "copilot-sdk" && (
+              <span style={{ ...s.pill, background: "#1e1f3a", color: "#818cf8", fontSize: 11 }}>
+                🤖 GitHub Copilot SDK
+              </span>
+            )}
+            {playgroundEngine === "direct" && (
+              <span style={{ ...s.pill, ...s.pillBlue, fontSize: 11 }}>⚡ Direct inference</span>
+            )}
+          </div>
           <div style={s.resultBox}>
-            {playgroundLoading ? "Running..." : playgroundResult || "Output will appear here after testing."}
+            {playgroundLoading ? "Running agent..." : playgroundResult || "Output will appear here after testing."}
           </div>
         </div>
 
