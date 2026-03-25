@@ -140,8 +140,7 @@ export default function LLMConfigPage({ onBack }) {
 
   return (
     <div style={s.page}>
-      <div style={{ ...s.row2, gridTemplateColumns: "auto 1fr", alignItems: "center", marginBottom: 0 }}>
-        <button style={{ ...s.btn, ...s.btnSecondary, padding: "7px 14px", fontSize: 13 }} onClick={onBack}>← Back</button>
+      <div style={{ ...s.row2, gridTemplateColumns: "1fr", alignItems: "center", marginBottom: 0 }}>
         <div>
           <div style={s.title}>LLM Configuration</div>
           <div style={s.subtitle}>Choose a provider, supply credentials, and set optional parameters. Mark one config as active to use it in the playground.</div>

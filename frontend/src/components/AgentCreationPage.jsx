@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createDomain, createAgent, checkAgentName, runPlayground } from "../api";
+import { toPlainText } from "../utils/sanitizeLlmResponse";
 
 const s = {
   page: { padding: "32px 40px", color: "#e2e8f0", maxWidth: 860 },
@@ -138,7 +139,7 @@ export default function AgentCreationPage({ domains, onRefresh, prefillAgent, on
     setPlaygroundLoading(true); setPlaygroundResult(""); setPlaygroundEngine(null);
     try {
       const data = await runPlayground(effectivePrompt, userPrompt, activeLLMConfig?.id || null);
-      setPlaygroundResult(data.result);
+      setPlaygroundResult(toPlainText(data.result));
       setPlaygroundEngine(data.engine || "direct");
     } catch (e) {
       setPlaygroundResult(`Error: ${e.response?.data?.detail || e.message}`);

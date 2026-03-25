@@ -49,7 +49,7 @@ def _build_provider(config: models.LLMConfig) -> dict:
     return p
 
 
-def _build_session_options(config: models.LLMConfig, skill: str) -> dict:
+def _build_session_options(config: models.LLMConfig, skill: str, allow_tools: bool = False) -> dict:
     """Build the full session options dict for client.create_session()."""
     from copilot import PermissionHandler
 
@@ -69,6 +69,11 @@ def _build_session_options(config: models.LLMConfig, skill: str) -> dict:
         extra["top_p"] = config.top_p
     if config.max_tokens is not None:
         extra["max_tokens"] = config.max_tokens
+    
+    # Block tool calls at the API level if not allowing tools
+    if not allow_tools:
+        extra["tool_choice"] = "none"
+    
     if extra:
         opts["extra_body"] = extra
 
@@ -79,12 +84,18 @@ async def run_via_copilot_sdk(
     config: models.LLMConfig,
     skill: str,
     user_prompt: str,
+    allow_tools: bool = False,
     timeout: float = 60.0,
 ) -> str:
     """
     Create a GitHub Copilot SDK session using BYOK provider config,
     send the user prompt, wait for the response, and return the text.
+    
+    allow_tools: if False, passes tool_choice="none" to block tool calls at API level.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
         from copilot import CopilotClient
     except ImportError:
@@ -93,21 +104,38 @@ async def run_via_copilot_sdk(
     # Decrypt API key — it's stored encrypted in DB
     if config.api_key:
         config.api_key = decrypt(config.api_key)
-    session_opts = _build_session_options(config, skill)
+    
+    # If not allowing tools, append instruction to skill
+    final_skill = skill
+    if not allow_tools:
+        final_skill = skill + "\n\n[IMPORTANT: You do not have access to any tools. Answer using only your knowledge. If you cannot answer, say 'I don't know'.]"
+    
+    session_opts = _build_session_options(config, final_skill, allow_tools=allow_tools)
     client = CopilotClient()
     session = None
 
     try:
+        logger.info(f"[Copilot SDK] Starting session with model={config.model_name}, allow_tools={allow_tools}")
         await client.start()
         session = await client.create_session(session_opts)
         event = await session.send_and_wait({"prompt": user_prompt}, timeout=timeout)
         if event is None:
+            logger.info("[Copilot SDK] No response received")
             return "[No response received]"
-        return getattr(event.data, "content", "") or "[Empty response]"
+        result = getattr(event.data, "content", "") or "[Empty response]"
+        logger.info("[Copilot SDK] ✓ Success via SDK")
+        return result
 
     except asyncio.TimeoutError:
+        logger.warning(f"[Copilot SDK] Timeout after {timeout}s")
         return f"[Timeout] No response from Copilot SDK after {timeout}s"
     except Exception as e:
+        error_str = str(e)
+        logger.warning(f"[Copilot SDK] Error: {error_str}")
+        # If tool_use_failed error, fall back to direct httpx call
+        if "tool_use_failed" in error_str or "Tool choice is none" in error_str:
+            logger.info("[Copilot SDK] Falling back to direct httpx call")
+            return await _fallback_direct_call(config, skill, user_prompt)
         return f"[Copilot SDK error] {type(e).__name__}: {e}"
     finally:
         if session:
@@ -119,3 +147,47 @@ async def run_via_copilot_sdk(
             await client.stop()
         except Exception:
             pass
+
+
+async def _fallback_direct_call(config: models.LLMConfig, skill: str, user_prompt: str) -> str:
+    """Fallback: direct httpx call with tool_choice: none when SDK fails."""
+    import httpx
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    base_url = (config.base_url or "https://api.openai.com/v1").rstrip("/")
+    headers = {"Authorization": f"Bearer {config.api_key or ''}", "Content-Type": "application/json"}
+    body: dict = {
+        "model": config.model_name or "gpt-4o",
+        "messages": [
+            {"role": "system", "content": skill},
+            {"role": "user", "content": user_prompt},
+        ],
+        "tool_choice": "none",
+    }
+    if config.temperature is not None:
+        body["temperature"] = config.temperature
+    if config.top_p is not None:
+        body["top_p"] = config.top_p
+    if config.max_tokens is not None:
+        body["max_tokens"] = config.max_tokens
+
+    try:
+        logger.info("[Fallback] Using direct httpx call with tool_choice=none")
+        resp = httpx.post(f"{base_url}/chat/completions", headers=headers, json=body, timeout=60)
+        resp.raise_for_status()
+        logger.info("[Fallback] ✓ Success via direct httpx")
+        return resp.json()["choices"][0]["message"]["content"]
+    except httpx.ConnectError:
+        logger.error(f"[Fallback] Connection error to {base_url}")
+        return f"[Connection error] Could not reach {base_url}"
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[Fallback] HTTP {e.response.status_code}")
+        try:
+            detail = e.response.json()
+        except Exception:
+            detail = e.response.text
+        return f"[API error {e.response.status_code}] {detail}"
+    except Exception as e:
+        logger.error(f"[Fallback] Error: {str(e)}")
+        return f"[Fallback error] {str(e)}"

@@ -4,13 +4,14 @@ import SidePanel from "./components/SidePanel";
 import LLMConfigPage from "./components/LLMConfigPage";
 import ToolsManagementPage from "./components/ToolsManagementPage";
 import TaskPlaygroundPage from "./components/TaskPlaygroundPage";
+import Navbar from "./components/Navbar";
 import { fetchDomains, fetchAgents, fetchLLMConfigs } from "./api";
 
 export default function App() {
   const [domains, setDomains] = useState([]);
   const [agents, setAgents] = useState([]);
   const [selectedAgent, setSelectedAgent] = useState(null);
-  const [page, setPage] = useState("agent"); // "agent" | "llm" | "tools" | "tasks"
+  const [page, setPage] = useState("agents"); // "agents" | "llm" | "tools" | "task"
   const [activeLLMConfig, setActiveLLMConfig] = useState(null);
 
   const refresh = async () => {
@@ -24,41 +25,62 @@ export default function App() {
     setActiveLLMConfig(configs.find(c => c.is_active) || null);
   };
 
-  // Also refresh active LLM config independently when returning from LLM config page
-  const refreshAfterLLMConfig = async () => {
-    await refresh();
-  };  useEffect(() => { refresh(); }, []);
+  useEffect(() => { refresh(); }, []);
+
+  const handleNavigate = (newPage) => {
+    setPage(newPage);
+    // Clear selection when navigating away from agents page
+    if (newPage !== "agents") {
+      setSelectedAgent(null);
+    }
+  };
+
+  const handleBack = () => {
+    setPage("agents");
+    setSelectedAgent(null);
+  };
 
   return (
-    <div style={{ display: "flex", height: "100vh", fontFamily: "Inter, sans-serif", background: "#0f1117" }}>
-      {page === "agent" && (
-        <SidePanel
-          domains={domains}
-          agents={agents}
-          onSelectAgent={setSelectedAgent}
-          selectedAgent={selectedAgent}
-          onOpenTools={() => setPage("tools")}
-          onOpenTasks={() => setPage("tasks")}
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", fontFamily: "Inter, sans-serif", background: "#0f1117" }}>
+      {/* Navbar — visible on all pages except agent creation (which has side panel) */}
+      {page !== "agents" && (
+        <Navbar
+          onBack={handleBack}
+          currentPage={page}
+          onNavigate={handleNavigate}
         />
       )}
-      <main style={{ flex: 1, overflowY: "auto" }}>
-        {page === "agent" ? (
-          <AgentCreationPage
+
+      <div style={{ display: "flex", flex: 1, overflowY: "auto" }}>
+        {page === "agents" && (
+          <SidePanel
             domains={domains}
-            onRefresh={refresh}
-            prefillAgent={selectedAgent}
-            onClearPrefill={() => setSelectedAgent(null)}
-            onOpenLLMConfig={() => setPage("llm")}
-            activeLLMConfig={activeLLMConfig}
+            agents={agents}
+            onSelectAgent={setSelectedAgent}
+            selectedAgent={selectedAgent}
+            onOpenTools={() => setPage("tools")}
+            onOpenTasks={() => setPage("task")}
           />
-        ) : page === "llm" ? (
-          <LLMConfigPage onBack={() => { setPage("agent"); refresh(); }} />
-        ) : page === "tools" ? (
-          <ToolsManagementPage onBack={() => setPage("agent")} />
-        ) : (
-          <TaskPlaygroundPage onBack={() => setPage("agent")} />
         )}
-      </main>
+        <main style={{ flex: 1, overflowY: "auto" }}>
+          {page === "agents" ? (
+            <AgentCreationPage
+              domains={domains}
+              onRefresh={refresh}
+              prefillAgent={selectedAgent}
+              onClearPrefill={() => setSelectedAgent(null)}
+              onOpenLLMConfig={() => setPage("llm")}
+              activeLLMConfig={activeLLMConfig}
+            />
+          ) : page === "llm" ? (
+            <LLMConfigPage onBack={handleBack} />
+          ) : page === "tools" ? (
+            <ToolsManagementPage onBack={handleBack} />
+          ) : (
+            <TaskPlaygroundPage onBack={handleBack} />
+          )}
+        </main>
+      </div>
     </div>
   );
 }

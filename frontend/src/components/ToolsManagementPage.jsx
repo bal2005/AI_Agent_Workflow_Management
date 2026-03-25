@@ -291,17 +291,45 @@ export default function ToolsManagementPage({ onBack }) {
     setSaved(false);
   };
 
-  const handleDomainChange = (e) => {
-    setSelectedDomainId(e.target.value);
-    setSelectedAgentId("");
-    setPerms({});
-    setConfigs({});
-    setSaved(false);
-    setError("");
+  // Tree expand state: set of domain IDs that are open
+  const [expandedDomains, setExpandedDomains] = useState(new Set());
+
+  // Agents per domain cache: domainId → agent[]
+  const [agentsByDomain, setAgentsByDomain] = useState({});
+  const [loadingDomainId, setLoadingDomainId] = useState(null);
+
+  const toggleDomain = async (domainId) => {
+    const isOpen = expandedDomains.has(domainId);
+    if (isOpen) {
+      setExpandedDomains(prev => { const s = new Set(prev); s.delete(domainId); return s; });
+      return;
+    }
+    setExpandedDomains(prev => new Set([...prev, domainId]));
+    // Fetch agents for this domain if not cached
+    if (!agentsByDomain[domainId]) {
+      setLoadingDomainId(domainId);
+      try {
+        const agents = await fetchAgentsByDomain(domainId);
+        setAgentsByDomain(prev => ({ ...prev, [domainId]: agents }));
+      } catch {
+        setError("Failed to load agents.");
+      } finally {
+        setLoadingDomainId(null);
+      }
+    }
   };
 
-  const handleAgentChange = (e) => {
-    setSelectedAgentId(e.target.value);
+  const selectAgent = (domainId, agentId) => {
+    // Mirror the old dropdown handlers exactly
+    if (String(domainId) !== String(selectedDomainId)) {
+      setSelectedDomainId(String(domainId));
+      setDomainAgents(agentsByDomain[domainId] || []);
+      setPerms({});
+      setConfigs({});
+      setSaved(false);
+      setError("");
+    }
+    setSelectedAgentId(String(agentId));
     setSaved(false);
     setError("");
   };
@@ -323,8 +351,8 @@ export default function ToolsManagementPage({ onBack }) {
     }
   };
 
-  const selectedDomain = domains.find(d => d.id === Number(selectedDomainId));
-  const selectedAgent = domainAgents.find(a => a.id === Number(selectedAgentId));
+  const selectedDomain = domains.find(d => String(d.id) === String(selectedDomainId));
+  const selectedAgent = (agentsByDomain[selectedDomainId] || domainAgents).find(a => String(a.id) === String(selectedAgentId));
 
   return (
     <div style={c.page}>
@@ -334,9 +362,6 @@ export default function ToolsManagementPage({ onBack }) {
           <h1 style={c.title}>Tools Management</h1>
           <p style={c.subtitle}>Define tool capabilities and assign access to agents</p>
         </div>
-        <button onClick={onBack} style={{ background: "none", border: "1px solid #2d3748", borderRadius: 8, color: "#94a3b8", padding: "8px 16px", cursor: "pointer", fontSize: 13 }}>
-          ← Back
-        </button>
       </div>
 
       {/* Tool Specifications */}
@@ -355,37 +380,91 @@ export default function ToolsManagementPage({ onBack }) {
       <div style={c.assignSection}>
         <div style={c.assignTitle}>Agent Access Assignment</div>
 
-        <div style={c.row}>
-          <div style={c.field}>
-            <label style={c.label}>Domain</label>
-            <select style={c.select} value={selectedDomainId} onChange={handleDomainChange}>
-              <option value="">Select domain...</option>
-              {domains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
+        {/* Tree view — replaces domain + agent dropdowns */}
+        <div style={{ display: "flex", gap: 24, marginBottom: 24, alignItems: "flex-start" }}>
+          <div style={{ width: 240, background: "#0f1117", border: "1px solid #1e2130", borderRadius: 10, overflow: "hidden", flexShrink: 0 }}>
+            {loadingTools ? (
+              <div style={{ padding: "14px 16px", fontSize: 12, color: "#475569" }}>Loading...</div>
+            ) : domains.length === 0 ? (
+              <div style={{ padding: "14px 16px", fontSize: 12, color: "#475569" }}>No domains found</div>
+            ) : domains.map((domain, i) => {
+              const isExpanded = expandedDomains.has(domain.id);
+              const isLoadingThis = loadingDomainId === domain.id;
+              const agents = agentsByDomain[domain.id] || [];
+              return (
+                <div key={domain.id} style={{ borderBottom: i < domains.length - 1 ? "1px solid #1e2130" : "none" }}>
+                  {/* Domain row */}
+                  <div
+                    onClick={() => toggleDomain(domain.id)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      padding: "10px 14px", cursor: "pointer", userSelect: "none",
+                      background: String(selectedDomainId) === String(domain.id) ? "#1a1d2e" : "transparent",
+                      transition: "background .15s",
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#1a1d2e"}
+                    onMouseLeave={e => e.currentTarget.style.background = String(selectedDomainId) === String(domain.id) ? "#1a1d2e" : "transparent"}
+                  >
+                    <span style={{
+                      fontSize: 10, color: "#475569", transition: "transform .2s", display: "inline-block",
+                      transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)",
+                    }}>▶</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: "#cbd5e1" }}>🗂 {domain.name}</span>
+                    {isLoadingThis && <span style={{ fontSize: 10, color: "#475569", marginLeft: "auto" }}>...</span>}
+                  </div>
+
+                  {/* Agent rows */}
+                  {isExpanded && (
+                    <div>
+                      {agents.length === 0 && !isLoadingThis && (
+                        <div style={{ padding: "6px 14px 6px 34px", fontSize: 12, color: "#334155" }}>No agents</div>
+                      )}
+                      {agents.map(agent => {
+                        const isSelected = String(selectedAgentId) === String(agent.id);
+                        return (
+                          <div
+                            key={agent.id}
+                            onClick={() => selectAgent(domain.id, agent.id)}
+                            style={{
+                              display: "flex", alignItems: "center", gap: 8,
+                              padding: "8px 14px 8px 30px", cursor: "pointer", userSelect: "none",
+                              background: isSelected ? "#1e1f3a" : "transparent",
+                              borderLeft: isSelected ? "2px solid #6366f1" : "2px solid transparent",
+                              transition: "all .15s",
+                            }}
+                            onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = "#13151f"; }}
+                            onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
+                          >
+                            <span style={{ fontSize: 11, color: "#334155" }}>├─</span>
+                            <span style={{ fontSize: 13, color: isSelected ? "#a5b4fc" : "#94a3b8", fontWeight: isSelected ? 600 : 400 }}>
+                              {agent.name}
+                            </span>
+                            {isSelected && <span style={{ marginLeft: "auto", fontSize: 10, color: "#6366f1" }}>●</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
-          <div style={c.field}>
-            <label style={c.label}>Agent</label>
-            <select
-              style={{ ...c.select, opacity: selectedDomainId ? 1 : 0.4 }}
-              value={selectedAgentId}
-              onChange={handleAgentChange}
-              disabled={!selectedDomainId || loadingAgents}
-            >
-              <option value="">{loadingAgents ? "Loading..." : "Select agent..."}</option>
-              {domainAgents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
+          {/* Breadcrumb / hint */}
+          <div style={{ paddingTop: 8 }}>
+            {selectedDomain && selectedAgent ? (
+              <div style={c.breadcrumb}>
+                <span style={c.breadcrumbDomain}>{selectedDomain.name}</span>
+                <span style={c.breadcrumbSep}>›</span>
+                <span style={c.breadcrumbAgent}>{selectedAgent.name}</span>
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, color: "#334155" }}>
+                Expand a domain and click an agent to assign tools.
+              </div>
+            )}
           </div>
         </div>
-
-        {/* Domain › Agent breadcrumb */}
-        {selectedDomain && selectedAgent && (
-          <div style={c.breadcrumb}>
-            <span style={c.breadcrumbDomain}>{selectedDomain.name}</span>
-            <span style={c.breadcrumbSep}>›</span>
-            <span style={c.breadcrumbAgent}>{selectedAgent.name}</span>
-          </div>
-        )}
 
         {/* Permission checkboxes */}
         {loadingAccess ? (

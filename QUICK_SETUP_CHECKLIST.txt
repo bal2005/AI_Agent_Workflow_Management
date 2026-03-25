@@ -1,0 +1,158 @@
+═══════════════════════════════════════════════════════════════════════════════
+  AGENT STUDIO — QUICK SETUP CHECKLIST FOR NEW MACHINE
+═══════════════════════════════════════════════════════════════════════════════
+
+PREREQUISITES
+─────────────────────────────────────────────────────────────────────────────
+☐ Git installed                    (git --version)
+☐ Python 3.12+ installed           (python --version)
+☐ Node.js 18+ installed            (node --version)
+☐ npm installed                    (npm --version)
+
+
+STEP 1: CLONE & NAVIGATE
+─────────────────────────────────────────────────────────────────────────────
+☐ git clone <repo-url>
+☐ cd AI_Agent_Workflow_Management
+
+
+STEP 2: BACKEND SETUP
+─────────────────────────────────────────────────────────────────────────────
+☐ cd backend
+☐ python -m venv venv
+☐ venv\Scripts\Activate.ps1        (Windows PowerShell)
+  OR source venv/bin/activate      (macOS/Linux)
+☐ pip install -r requirements.txt
+☐ Create backend/.env with:
+    DATABASE_URL=postgresql://...
+    ENCRYPTION_KEY=<base64-key>
+☐ alembic upgrade head
+☐ python -c "from app.main import app; print('✓ OK')"
+
+
+STEP 3: FRONTEND SETUP
+─────────────────────────────────────────────────────────────────────────────
+☐ cd ../frontend
+☐ npm install
+☐ npm run build
+
+
+STEP 4: START SERVERS
+─────────────────────────────────────────────────────────────────────────────
+Terminal 1 (Backend):
+☐ cd backend
+☐ venv\Scripts\Activate.ps1
+☐ uvicorn app.main:app --reload --port 8000
+  Expected: "Uvicorn running on http://127.0.0.1:8000"
+
+Terminal 2 (Frontend):
+☐ cd frontend
+☐ npm run dev
+  Expected: "Local: http://localhost:5173/"
+
+
+STEP 5: VERIFY APPLICATION
+─────────────────────────────────────────────────────────────────────────────
+☐ Open http://localhost:5173 in browser
+☐ See Agent Studio interface
+☐ Can navigate between pages (Agent, LLM Config, Tools, Task Playground)
+
+
+STEP 6: INITIAL CONFIGURATION
+─────────────────────────────────────────────────────────────────────────────
+☐ Go to LLM Config page
+☐ Add LLM config (OpenAI/Groq/Claude/etc.) with API key
+☐ Click "Set Active"
+☐ Go to Agent Creation page
+☐ Create a domain (e.g., "Finance")
+☐ Create an agent with a system prompt
+☐ Go to Tools Management page
+☐ Assign filesystem/shell/web permissions to agent
+☐ Go to Task Playground page
+☐ Select agent, enter root path, enter task, click "Run Task"
+
+
+TROUBLESHOOTING
+─────────────────────────────────────────────────────────────────────────────
+Backend won't start:
+  ☐ Check virtual environment is activated
+  ☐ Check DATABASE_URL in .env is correct
+  ☐ Check ENCRYPTION_KEY is set
+  ☐ Try: pip install -r requirements.txt again
+
+Frontend won't start:
+  ☐ Check Node.js version (18+)
+  ☐ Delete node_modules/ and package-lock.json
+  ☐ Run: npm install again
+
+API errors:
+  ☐ Ensure backend is running on port 8000
+  ☐ Check browser console (F12) for errors
+  ☐ Check backend terminal for error messages
+
+
+ENVIRONMENT VARIABLES (.env)
+─────────────────────────────────────────────────────────────────────────────
+DATABASE_URL format:
+  postgresql://username:password@host:port/database?sslmode=require&channel_binding=require
+
+ENCRYPTION_KEY generation:
+  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+
+KEY PORTS
+─────────────────────────────────────────────────────────────────────────────
+Backend:  http://localhost:8000
+Frontend: http://localhost:5173
+
+
+USEFUL COMMANDS
+─────────────────────────────────────────────────────────────────────────────
+Backend:
+  uvicorn app.main:app --reload --port 8000
+  alembic upgrade head
+  alembic revision --autogenerate -m "description"
+
+Frontend:
+  npm run dev
+  npm run build
+  npm run preview
+
+
+PROJECT STRUCTURE
+─────────────────────────────────────────────────────────────────────────────
+backend/
+  ├── app/
+  │   ├── main.py (FastAPI entry)
+  │   ├── models.py (Database models)
+  │   ├── routers/ (API endpoints)
+  │   ├── shell_tools.py (Shell commands)
+  │   ├── web_tools.py (Web search)
+  │   └── crypto.py (Encryption)
+  ├── alembic/ (Database migrations)
+  ├── requirements.txt
+  ├── .env (IMPORTANT: Not in Git)
+  └── venv/ (Virtual environment)
+
+frontend/
+  ├── src/
+  │   ├── App.jsx (Main component)
+  │   ├── api.js (API client)
+  │   └── components/ (Pages)
+  ├── package.json
+  ├── vite.config.js
+  └── node_modules/
+
+
+NOTES
+─────────────────────────────────────────────────────────────────────────────
+• .env is NOT committed to Git — create your own on each machine
+• venv/ and node_modules/ are ignored — reinstall on each machine
+• Database migrations are version-controlled in backend/alembic/versions/
+• Each developer needs their own DATABASE_URL and ENCRYPTION_KEY
+• Frontend proxies all API calls to backend via Vite dev proxy
+
+
+═══════════════════════════════════════════════════════════════════════════════
+For detailed instructions, see SETUP_GUIDE.md
+═══════════════════════════════════════════════════════════════════════════════

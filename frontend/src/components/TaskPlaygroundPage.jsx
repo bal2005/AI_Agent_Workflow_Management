@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { fetchDomains, fetchAgentsByDomain, runTaskPlayground } from "../api";
+import { toPlainText } from "../utils/sanitizeLlmResponse";
 
 const c = {
   page: { minHeight: "100vh", background: "#0f1117", color: "#e2e8f0", fontFamily: "Inter, sans-serif", padding: "32px 40px", maxWidth: 900 },
@@ -118,7 +119,7 @@ export default function TaskPlaygroundPage({ onBack }) {
         shell_permissions: shellPerms,
         web_permissions: webPerms,
       });
-      setResult(data);
+      setResult({ ...data, result: toPlainText(data.result) });
     } catch (e) {
       setError(e.response?.data?.detail || e.message || "Request failed");
     } finally {
@@ -137,9 +138,6 @@ export default function TaskPlaygroundPage({ onBack }) {
           <h1 style={c.title}>Task Playground</h1>
           <p style={c.subtitle}>Run agents against real tools using the GitHub Copilot SDK</p>
         </div>
-        <button onClick={onBack} style={{ background: "none", border: "1px solid #2d3748", borderRadius: 8, color: "#94a3b8", padding: "8px 16px", cursor: "pointer", fontSize: 13 }}>
-          ← Back
-        </button>
       </div>
 
       {/* Agent Selection */}
