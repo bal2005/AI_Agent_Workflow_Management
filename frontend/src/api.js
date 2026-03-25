@@ -32,3 +32,20 @@ export const saveAgentToolAccess = (agentId, entries) =>
 // Task Playground
 export const runTaskPlayground = (payload) =>
   api.post("/task-playground/run", payload).then(r => r.data);
+
+// Tasks CRUD
+export const fetchTasks = () => api.get("/tasks/").then(r => r.data);
+export const createTask = (payload) => api.post("/tasks/", payload).then(r => r.data);
+export const updateTask = (id, payload) => api.patch(`/tasks/${id}`, payload).then(r => r.data);
+export const deleteTask = (id) => api.delete(`/tasks/${id}`);
+export const dryRunTask = (payload) => api.post("/tasks/dry-run", payload).then(r => r.data);
+export const dryRunSavedTask = (id) => api.post(`/tasks/${id}/dry-run`).then(r => r.data);
+
+// Schedules
+export const fetchSchedules = () => api.get("/schedules/").then(r => r.data);
+export const createSchedule = (payload) => api.post("/schedules/", payload).then(r => r.data);
+export const updateSchedule = (id, payload) => api.patch(`/schedules/${id}`, payload).then(r => r.data);
+export const deleteSchedule = (id) => api.delete(`/schedules/${id}`);
+export const runScheduleNow = (id) => api.post(`/schedules/${id}/run-now`).then(r => r.data);
+export const fetchScheduleRuns = (id, limit = 20) => api.get(`/schedules/${id}/runs`, { params: { limit } }).then(r => r.data);
+export const fetchRun = (runId) => api.get(`/schedules/runs/${runId}`).then(r => r.data);

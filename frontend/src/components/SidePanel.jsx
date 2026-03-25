@@ -26,7 +26,7 @@ const s = {
   noData: { padding: "16px 18px", fontSize: 12, color: "#475569" },
 };
 
-export default function SidePanel({ domains, agents, onSelectAgent, selectedAgent, onOpenTools, onOpenTasks }) {
+export default function SidePanel({ domains, agents, onSelectAgent, selectedAgent, onOpenTools, onOpenTasks, onOpenTaskCreate, onOpenScheduler }) {
   const [openDomains, setOpenDomains] = useState({});
 
   const toggle = (id) =>
@@ -47,6 +47,24 @@ export default function SidePanel({ domains, agents, onSelectAgent, selectedAgen
         onMouseLeave={e => e.currentTarget.style.background = "transparent"}
       >
         <span>🔧</span> Tools Management
+      </div>
+
+      <div
+        onClick={onOpenTaskCreate}
+        style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, color: "#f59e0b", borderBottom: "1px solid #1e2130" }}
+        onMouseEnter={e => e.currentTarget.style.background = "#1a1d2e"}
+        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+      >
+        <span>📋</span> Task Creation
+      </div>
+
+      <div
+        onClick={onOpenScheduler}
+        style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, color: "#a78bfa", borderBottom: "1px solid #1e2130" }}
+        onMouseEnter={e => e.currentTarget.style.background = "#1a1d2e"}
+        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+      >
+        <span>🗓</span> Scheduler
       </div>
 
       <div

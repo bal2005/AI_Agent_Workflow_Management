@@ -4,6 +4,8 @@ import SidePanel from "./components/SidePanel";
 import LLMConfigPage from "./components/LLMConfigPage";
 import ToolsManagementPage from "./components/ToolsManagementPage";
 import TaskPlaygroundPage from "./components/TaskPlaygroundPage";
+import TaskCreationPage from "./components/TaskCreationPage";
+import SchedulerPage from "./components/SchedulerPage";
 import Navbar from "./components/Navbar";
 import { fetchDomains, fetchAgents, fetchLLMConfigs } from "./api";
 
@@ -11,7 +13,7 @@ export default function App() {
   const [domains, setDomains] = useState([]);
   const [agents, setAgents] = useState([]);
   const [selectedAgent, setSelectedAgent] = useState(null);
-  const [page, setPage] = useState("agents"); // "agents" | "llm" | "tools" | "task"
+  const [page, setPage] = useState("agents"); // "agents"|"llm"|"tools"|"task"|"task-create"|"scheduler"
   const [activeLLMConfig, setActiveLLMConfig] = useState(null);
 
   const refresh = async () => {
@@ -41,7 +43,7 @@ export default function App() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", fontFamily: "Inter, sans-serif", background: "#0f1117" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden", fontFamily: "Inter, sans-serif", background: "#0f1117" }}>
       {/* Navbar — visible on all pages except agent creation (which has side panel) */}
       {page !== "agents" && (
         <Navbar
@@ -51,7 +53,7 @@ export default function App() {
         />
       )}
 
-      <div style={{ display: "flex", flex: 1, overflowY: "auto" }}>
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         {page === "agents" && (
           <SidePanel
             domains={domains}
@@ -60,9 +62,11 @@ export default function App() {
             selectedAgent={selectedAgent}
             onOpenTools={() => setPage("tools")}
             onOpenTasks={() => setPage("task")}
+            onOpenTaskCreate={() => setPage("task-create")}
+            onOpenScheduler={() => setPage("scheduler")}
           />
         )}
-        <main style={{ flex: 1, overflowY: "auto" }}>
+        <main style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
           {page === "agents" ? (
             <AgentCreationPage
               domains={domains}
@@ -76,6 +80,10 @@ export default function App() {
             <LLMConfigPage onBack={handleBack} />
           ) : page === "tools" ? (
             <ToolsManagementPage onBack={handleBack} />
+          ) : page === "task-create" ? (
+            <TaskCreationPage />
+          ) : page === "scheduler" ? (
+            <SchedulerPage />
           ) : (
             <TaskPlaygroundPage onBack={handleBack} />
           )}

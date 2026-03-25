@@ -106,3 +106,116 @@ class AgentToolAccess(Base):
 
     agent = relationship("Agent", back_populates="tool_access")
     tool = relationship("Tool", back_populates="agent_access")
+
+
+class Task(Base):
+    """
+    A saved task definition: name, description (prompt), agent, LLM config,
+    optional workflow steps, folder path, and tool usage mode.
+    """
+    __tablename__ = "tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=False)           # acts as the task prompt
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
+    llm_config_id = Column(Integer, ForeignKey("llm_configs.id"), nullable=True)
+
+    # LLM overrides stored per-task
+    llm_provider = Column(String(50), nullable=True)
+    llm_model = Column(String(100), nullable=True)
+    llm_temperature = Column(Float, nullable=True)
+    llm_max_tokens = Column(Integer, nullable=True)
+    llm_top_p = Column(Float, nullable=True)
+    llm_system_behavior = Column(Text, nullable=True)    # optional system behavior override
+    tool_usage_mode = Column(String(20), nullable=True, default="allowed")  # allowed|restricted|none
+
+    # Optional step-by-step workflow (one step per line)
+    workflow = Column(Text, nullable=True)
+
+    # Folder path the task operates on
+    folder_path = Column(String(500), nullable=True)
+
+    status = Column(String(20), nullable=False, default="draft")  # draft|active
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    agent = relationship("Agent")
+    llm_config = relationship("LLMConfig")
+
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+
+class Schedule(Base):
+    __tablename__ = "schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    # manual | interval | cron
+    trigger_type = Column(String(20), nullable=False, default="manual")
+    # interval fields
+    interval_value = Column(Integer, nullable=True)
+    interval_unit = Column(String(20), nullable=True)   # minutes | hours | days
+    # cron field
+    cron_expression = Column(String(100), nullable=True)
+    is_active = Column(Boolean, default=True)
+    next_run_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    schedule_tasks = relationship(
+        "ScheduleTask", back_populates="schedule",
+        cascade="all, delete-orphan", order_by="ScheduleTask.position"
+    )
+    runs = relationship("ScheduleRun", back_populates="schedule", cascade="all, delete-orphan")
+
+
+class ScheduleTask(Base):
+    """Ordered list of tasks attached to a schedule."""
+    __tablename__ = "schedule_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    schedule_id = Column(Integer, ForeignKey("schedules.id"), nullable=False)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
+    position = Column(Integer, nullable=False, default=0)
+
+    schedule = relationship("Schedule", back_populates="schedule_tasks")
+    task = relationship("Task")
+
+
+class ScheduleRun(Base):
+    """One execution of a schedule."""
+    __tablename__ = "schedule_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    schedule_id = Column(Integer, ForeignKey("schedules.id"), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")  # pending|running|success|failed
+    triggered_by = Column(String(20), nullable=False, default="manual")  # manual|scheduler
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    schedule = relationship("Schedule", back_populates="runs")
+    task_runs = relationship("ScheduleTaskRun", back_populates="run", cascade="all, delete-orphan",
+                             order_by="ScheduleTaskRun.position")
+
+
+class ScheduleTaskRun(Base):
+    """Result of one task within a schedule run."""
+    __tablename__ = "schedule_task_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("schedule_runs.id"), nullable=False)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
+    position = Column(Integer, nullable=False, default=0)
+    status = Column(String(20), nullable=False, default="pending")  # pending|running|success|failed|skipped
+    output = Column(Text, nullable=True)
+    logs = Column(JSON, nullable=True, default=list)   # list of step strings
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+
+    run = relationship("ScheduleRun", back_populates="task_runs")
+    task = relationship("Task")

@@ -8,7 +8,7 @@ const s = {
     padding: "16px 40px",
     background: "#0f1117",
     borderBottom: "1px solid #1e2130",
-    marginBottom: 32,
+    flexShrink: 0,
   },
   backBtn: {
     background: "none",
@@ -41,10 +41,12 @@ const s = {
 
 export default function Navbar({ onBack, currentPage, onNavigate }) {
   const pages = [
-    { id: "agents", label: "🤖 Agent Creation" },
-    { id: "tools", label: "🔧 Tools Management" },
-    { id: "task", label: "⚡ Task Playground" },
-    { id: "llm", label: "🧠 LLM Config" },
+    { id: "agents",      label: "🤖 Agent Creation" },
+    { id: "tools",       label: "🔧 Tools Management" },
+    { id: "task-create", label: "📋 Task Creation" },
+    { id: "task",        label: "⚡ Task Playground" },
+    { id: "scheduler",   label: "🗓 Scheduler" },
+    { id: "llm",         label: "🧠 LLM Config" },
   ];
 
   return (

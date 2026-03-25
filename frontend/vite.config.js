@@ -6,12 +6,14 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/domains": "http://localhost:8000",
-      "/agents": "http://localhost:8000",
-      "/llm-configs": "http://localhost:8000",
-      "/tools": "http://localhost:8000",
-      "/task-playground": "http://localhost:8000",
-      "/health": "http://localhost:8000",
+      "/domains":        { target: "http://localhost:8000", changeOrigin: true },
+      "/agents":         { target: "http://localhost:8000", changeOrigin: true },
+      "/llm-configs":    { target: "http://localhost:8000", changeOrigin: true },
+      "/tools":          { target: "http://localhost:8000", changeOrigin: true },
+      "/task-playground":{ target: "http://localhost:8000", changeOrigin: true },
+      "/tasks":          { target: "http://localhost:8000", changeOrigin: true },
+      "/schedules":      { target: "http://localhost:8000", changeOrigin: true },
+      "/health":         { target: "http://localhost:8000", changeOrigin: true },
     },
   },
 });
