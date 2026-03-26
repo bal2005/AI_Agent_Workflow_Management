@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { createDomain, createAgent, checkAgentName, runPlayground } from "../api";
+import { createDomain, fetchDomains, createAgent, checkAgentName, runPlayground } from "../api";
 import { toPlainText } from "../utils/sanitizeLlmResponse";
 
 const s = {
@@ -39,10 +39,17 @@ function useDebounce(value, delay) {
   return d;
 }
 
-export default function AgentCreationPage({ domains, onRefresh, prefillAgent, onClearPrefill, onOpenLLMConfig, activeLLMConfig }) {
+export default function AgentCreationPage({ domains: domainsProp, onRefresh, prefillAgent, onClearPrefill, onOpenLLMConfig, activeLLMConfig }) {
   const [newDomain, setNewDomain] = useState("");
+  const [newDomainPrompt, setNewDomainPrompt] = useState("");
   const [domainError, setDomainError] = useState("");
   const [domainSuccess, setDomainSuccess] = useState("");
+
+  // Keep a local fresh copy — always re-fetch on mount so domain_prompt is current
+  const [localDomains, setLocalDomains] = useState(domainsProp || []);
+  useEffect(() => {
+    fetchDomains().then(setLocalDomains).catch(() => {});
+  }, []);
 
   const [selectedDomainId, setSelectedDomainId] = useState("");
   const [agentName, setAgentName] = useState("");
@@ -92,8 +99,10 @@ export default function AgentCreationPage({ domains, onRefresh, prefillAgent, on
     setDomainError(""); setDomainSuccess("");
     if (!newDomain.trim()) { setDomainError("Domain name is required"); return; }
     try {
-      await createDomain(newDomain.trim());
-      setNewDomain(""); setDomainSuccess("Domain added");
+      await createDomain(newDomain.trim(), newDomainPrompt.trim() || null);
+      setNewDomain(""); setNewDomainPrompt(""); setDomainSuccess("Domain added");
+      const fresh = await fetchDomains().catch(() => localDomains);
+      setLocalDomains(fresh);
       onRefresh();
     } catch (e) { setDomainError(e.response?.data?.detail || "Failed to add domain"); }
   };
@@ -125,7 +134,6 @@ export default function AgentCreationPage({ domains, onRefresh, prefillAgent, on
     // Resolve the effective system prompt
     let effectivePrompt = systemPrompt;
     if (promptMode === "file" && mdFile) {
-      // Read the md file content client-side for playground preview
       effectivePrompt = await mdFile.text();
     }
     if (!effectivePrompt.trim()) {
@@ -136,9 +144,15 @@ export default function AgentCreationPage({ domains, onRefresh, prefillAgent, on
       setFormErrors(f => ({ ...f, userPrompt: "User prompt is required" }));
       return;
     }
+
+    // Get domain_prompt from selected domain
+    const selectedDomain = localDomains.find(d => String(d.id) === String(selectedDomainId));
+    const domainPrompt = selectedDomain?.domain_prompt || null;
+    console.log("[PLAYGROUND] selectedDomainId:", selectedDomainId, "domain_prompt:", domainPrompt);
+
     setPlaygroundLoading(true); setPlaygroundResult(""); setPlaygroundEngine(null);
     try {
-      const data = await runPlayground(effectivePrompt, userPrompt, activeLLMConfig?.id || null);
+      const data = await runPlayground(effectivePrompt, userPrompt, activeLLMConfig?.id || null, domainPrompt);
       setPlaygroundResult(toPlainText(data.result));
       setPlaygroundEngine(data.engine || "direct");
     } catch (e) {
@@ -185,15 +199,34 @@ export default function AgentCreationPage({ domains, onRefresh, prefillAgent, on
       {/* Add Domain */}
       <div style={s.section}>
         <div style={s.sectionTitle}>Add Domain</div>
-        <div style={s.row}>
-          <div style={{ flex: 1 }}>
-            <input style={{ ...s.input, ...(domainError ? s.inputError : {}) }} placeholder="e.g. Customer Support"
-              value={newDomain} onChange={e => { setNewDomain(e.target.value); setDomainError(""); setDomainSuccess(""); }}
-              onKeyDown={e => e.key === "Enter" && handleAddDomain()} />
-            {domainError && <div style={s.error}>{domainError}</div>}
-            {domainSuccess && <div style={s.success}>{domainSuccess}</div>}
+        <div style={s.fieldGroup}>
+          <label style={s.label}>Domain Name</label>
+          <div style={s.row}>
+            <div style={{ flex: 1 }}>
+              <input
+                style={{ ...s.input, ...(domainError ? s.inputError : {}) }}
+                placeholder="e.g. Customer Support"
+                value={newDomain}
+                onChange={e => { setNewDomain(e.target.value); setDomainError(""); setDomainSuccess(""); }}
+                onKeyDown={e => e.key === "Enter" && handleAddDomain()}
+              />
+            </div>
+            <button style={{ ...s.btn, ...s.btnPrimary }} onClick={handleAddDomain}>Add Domain</button>
           </div>
-          <button style={{ ...s.btn, ...s.btnPrimary }} onClick={handleAddDomain}>Add Domain</button>
+          {domainError && <div style={s.error}>{domainError}</div>}
+          {domainSuccess && <div style={s.success}>{domainSuccess}</div>}
+        </div>
+        <div style={s.fieldGroup}>
+          <label style={s.label}>Domain Prompt</label>
+          <textarea
+            style={{ ...s.textarea, minHeight: 80 }}
+            placeholder="Enter reusable domain-level instructions/context for all agents in this domain"
+            value={newDomainPrompt}
+            onChange={e => setNewDomainPrompt(e.target.value)}
+          />
+          <div style={{ fontSize: 12, color: "#475569", marginTop: 4 }}>
+            This context is prepended before the agent prompt on every execution.
+          </div>
         </div>
       </div>
 
@@ -206,7 +239,7 @@ export default function AgentCreationPage({ domains, onRefresh, prefillAgent, on
           <select style={{ ...s.select, ...(formErrors.domain ? s.inputError : {}) }}
             value={selectedDomainId} onChange={e => { setSelectedDomainId(e.target.value); setFormErrors(f => ({ ...f, domain: "" })); }}>
             <option value="">-- Select a domain --</option>
-            {domains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            {localDomains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
           {formErrors.domain && <div style={s.error}>{formErrors.domain}</div>}
         </div>

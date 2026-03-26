@@ -26,55 +26,19 @@ const s = {
   noData: { padding: "16px 18px", fontSize: 12, color: "#475569" },
 };
 
-export default function SidePanel({ domains, agents, onSelectAgent, selectedAgent, onOpenTools, onOpenTasks, onOpenTaskCreate, onOpenScheduler }) {
+export default function SidePanel({ domains, agents, onSelectAgent, selectedAgent }) {
   const [openDomains, setOpenDomains] = useState({});
 
   const toggle = (id) =>
     setOpenDomains(prev => ({ ...prev, [id]: prev[id] === false ? true : false }));
 
-  const isOpen = (id) => openDomains[id] !== false; // default open
+  const isOpen = (id) => openDomains[id] !== false;
 
   const agentsByDomain = (domainId) => agents.filter(a => a.domain_id === domainId);
 
   return (
     <aside style={s.panel}>
       <div style={s.header}>Domains & Agents</div>
-
-      <div
-        onClick={onOpenTools}
-        style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, color: "#818cf8", borderBottom: "1px solid #1e2130" }}
-        onMouseEnter={e => e.currentTarget.style.background = "#1a1d2e"}
-        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-      >
-        <span>🔧</span> Tools Management
-      </div>
-
-      <div
-        onClick={onOpenTaskCreate}
-        style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, color: "#f59e0b", borderBottom: "1px solid #1e2130" }}
-        onMouseEnter={e => e.currentTarget.style.background = "#1a1d2e"}
-        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-      >
-        <span>📋</span> Task Creation
-      </div>
-
-      <div
-        onClick={onOpenScheduler}
-        style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, color: "#a78bfa", borderBottom: "1px solid #1e2130" }}
-        onMouseEnter={e => e.currentTarget.style.background = "#1a1d2e"}
-        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-      >
-        <span>🗓</span> Scheduler
-      </div>
-
-      <div
-        onClick={onOpenTasks}
-        style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, color: "#34d399", borderBottom: "1px solid #1e2130", marginBottom: 8 }}
-        onMouseEnter={e => e.currentTarget.style.background = "#1a1d2e"}
-        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-      >
-        <span>▶</span> Task Playground
-      </div>
 
       {domains.length === 0 ? (
         <div style={s.noData}>No domains yet. Add one above.</div>

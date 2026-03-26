@@ -77,7 +77,7 @@ const emptyForm = {
   llm_system_behavior: "", tool_usage_mode: "allowed", workflow: "", folder_path: "", status: "draft",
 };
 
-export default function TaskCreationPage() {
+export default function TaskCreationPage({ onViewTask }) {
   const [domains, setDomains] = useState([]);
   const [agents, setAgents] = useState([]);
   const [llmConfigs, setLlmConfigs] = useState([]);
@@ -254,6 +254,14 @@ export default function TaskCreationPage() {
                 {task.agent ? `${task.agent.domain?.name} › ${task.agent.name}` : "No agent"}
                 {" · "}{task.status}
               </div>
+              {onViewTask && (
+                <div
+                  style={{ fontSize: 11, color: "#6366f1", marginTop: 3, cursor: "pointer" }}
+                  onClick={e => { e.stopPropagation(); onViewTask(task.id); }}
+                >
+                  📊 View Details →
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -347,6 +355,14 @@ export default function TaskCreationPage() {
           <button style={{ ...s.btn, ...s.btnSecondary }} onClick={startNew}>Reset</button>
           {selectedTask && (
             <button style={{ ...s.btn, ...s.btnDanger }} onClick={handleDelete}>Delete</button>
+          )}
+          {selectedTask && onViewTask && (
+            <button
+              style={{ ...s.btn, background: "#0f2a1a", border: "1px solid #166534", color: "#4ade80" }}
+              onClick={() => onViewTask(selectedTask.id)}
+            >
+              📊 View Details
+            </button>
           )}
           {!selectedTask && (
             <button

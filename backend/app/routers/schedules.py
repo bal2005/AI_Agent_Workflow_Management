@@ -86,6 +86,29 @@ def list_schedules(db: Session = Depends(get_db)):
     )
 
 
+@router.get("/all-runs", response_model=list[schemas.ScheduleRunOut])
+def list_all_runs(
+    limit: int = 100,
+    status: str = None,
+    triggered_by: str = None,
+    db: Session = Depends(get_db),
+):
+    """Return all schedule runs across all schedules, newest first."""
+    q = (
+        db.query(models.ScheduleRun)
+        .options(
+            joinedload(models.ScheduleRun.task_runs).joinedload(models.ScheduleTaskRun.task),
+            joinedload(models.ScheduleRun.schedule),
+        )
+        .order_by(models.ScheduleRun.created_at.desc())
+    )
+    if status:
+        q = q.filter(models.ScheduleRun.status == status)
+    if triggered_by:
+        q = q.filter(models.ScheduleRun.triggered_by == triggered_by)
+    return q.limit(limit).all()
+
+
 @router.post("/", response_model=schemas.ScheduleOut, status_code=201)
 def create_schedule(payload: schemas.ScheduleCreate, db: Session = Depends(get_db)):
     if not payload.name.strip():

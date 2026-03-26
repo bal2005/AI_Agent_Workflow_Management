@@ -69,11 +69,7 @@ def _build_session_options(config: models.LLMConfig, skill: str, allow_tools: bo
         extra["top_p"] = config.top_p
     if config.max_tokens is not None:
         extra["max_tokens"] = config.max_tokens
-    
-    # Block tool calls at the API level if not allowing tools
-    if not allow_tools:
-        extra["tool_choice"] = "none"
-    
+
     if extra:
         opts["extra_body"] = extra
 
@@ -150,7 +146,7 @@ async def run_via_copilot_sdk(
 
 
 async def _fallback_direct_call(config: models.LLMConfig, skill: str, user_prompt: str) -> str:
-    """Fallback: direct httpx call with tool_choice: none when SDK fails."""
+    """Fallback: direct httpx call — no tools, no tool_choice constraint."""
     import httpx
     import logging
     logger = logging.getLogger(__name__)
@@ -163,7 +159,7 @@ async def _fallback_direct_call(config: models.LLMConfig, skill: str, user_promp
             {"role": "system", "content": skill},
             {"role": "user", "content": user_prompt},
         ],
-        "tool_choice": "none",
+        # Do NOT send tool_choice or tools — cleanest way to prevent tool calls
     }
     if config.temperature is not None:
         body["temperature"] = config.temperature
@@ -173,7 +169,10 @@ async def _fallback_direct_call(config: models.LLMConfig, skill: str, user_promp
         body["max_tokens"] = config.max_tokens
 
     try:
-        logger.info("[Fallback] Using direct httpx call with tool_choice=none")
+        logger.info("[Fallback] Using direct httpx call (no tools)")
+        print(f"[FALLBACK REQUEST] url={base_url}/chat/completions model={body['model']} msgs={len(body['messages'])} temperature={body.get('temperature')} max_tokens={body.get('max_tokens')}", flush=True)
+        total_chars = sum(len(str(m.get("content") or "")) for m in body["messages"])
+        print(f"[FALLBACK REQUEST] total_content_chars={total_chars} roles={[m['role'] for m in body['messages']]}", flush=True)
         resp = httpx.post(f"{base_url}/chat/completions", headers=headers, json=body, timeout=60)
         resp.raise_for_status()
         logger.info("[Fallback] ✓ Success via direct httpx")
@@ -187,7 +186,11 @@ async def _fallback_direct_call(config: models.LLMConfig, skill: str, user_promp
             detail = e.response.json()
         except Exception:
             detail = e.response.text
-        return f"[API error {e.response.status_code}] {detail}"
+        print("=" * 60, flush=True)
+        print(f"[FALLBACK 400] model={body['model']}", flush=True)
+        print(f"[FALLBACK 400] response body: {detail}", flush=True)
+        print(f"[FALLBACK 400] message_count={len(body['messages'])} total_chars={total_chars}", flush=True)
+        print(f"[FALLBACK 400] temperature={body.get('temperature')} max_tokens={body.get('max_tokens')} top_p={body.get('top_p')}", flush=True)
     except Exception as e:
         logger.error(f"[Fallback] Error: {str(e)}")
         return f"[Fallback error] {str(e)}"

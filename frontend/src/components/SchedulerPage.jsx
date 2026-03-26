@@ -92,14 +92,12 @@ const emptyForm = {
   is_active: true, task_ids: [],
 };
 
-export default function SchedulerPage() {
+export default function SchedulerPage({ onOpenRunHistory }) {
   const [schedules, setSchedules]     = useState([]);
   const [allTasks, setAllTasks]       = useState([]);
-  const [selected, setSelected]       = useState(null);   // selected schedule
+  const [selected, setSelected]       = useState(null);
   const [form, setForm]               = useState(emptyForm);
   const [isNew, setIsNew]             = useState(false);
-  const [runs, setRuns]               = useState([]);
-  const [expandedRun, setExpandedRun] = useState(null);
   const [saving, setSaving]           = useState(false);
   const [running, setRunning]         = useState(false);
   const [msg, setMsg]                 = useState({ type: "", text: "" });
@@ -115,11 +113,6 @@ export default function SchedulerPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const loadRuns = async (scheduleId) => {
-    const r = await fetchScheduleRuns(scheduleId).catch(() => []);
-    setRuns(r);
-  };
-
   const selectSchedule = (sc) => {
     setSelected(sc);
     setIsNew(false);
@@ -134,15 +127,12 @@ export default function SchedulerPage() {
       task_ids: sc.schedule_tasks.map(st => ({ task_id: st.task_id, position: st.position })),
     });
     setMsg({ type: "", text: "" });
-    setExpandedRun(null);
-    loadRuns(sc.id);
   };
 
   const startNew = () => {
     setSelected(null);
     setIsNew(true);
     setForm(emptyForm);
-    setRuns([]);
     setMsg({ type: "", text: "" });
   };
 
@@ -208,10 +198,7 @@ export default function SchedulerPage() {
   };
 
   // Summary stats from runs
-  const totalRuns   = runs.length;
-  const successRuns = runs.filter(r => r.status === "success").length;
-  const failedRuns  = runs.filter(r => r.status === "failed").length;
-  const lastRun     = runs[0];
+  const lastRun = null;
 
   const showForm = isNew || selected;
 
@@ -317,27 +304,15 @@ export default function SchedulerPage() {
               )}
             </div>
 
-            {/* ── 4. Run History ── */}
+            {/* ── Run History link ── */}
             {selected && (
-              <RunHistory
-                runs={runs}
-                expandedRun={expandedRun}
-                setExpandedRun={setExpandedRun}
-                onRefresh={() => loadRuns(selected.id)}
-              />
-            )}
-
-            {/* ── 5. Summary Cards ── */}
-            {selected && (
-              <div style={s.cards}>
-                <SummaryCard value={totalRuns} label="Total Runs" />
-                <SummaryCard value={successRuns} label="Successful" color="#4ade80" />
-                <SummaryCard value={failedRuns} label="Failed" color="#f87171" />
-                <SummaryCard
-                  value={lastRun ? new Date(lastRun.created_at).toLocaleDateString() : "—"}
-                  label="Last Run"
-                  small
-                />
+              <div style={{ marginTop: 16 }}>
+                <button
+                  style={{ ...s.btnRun, display: "inline-flex", alignItems: "center", gap: 8 }}
+                  onClick={() => onOpenRunHistory && onOpenRunHistory(selected.id)}
+                >
+                  📋 View Run History
+                </button>
               </div>
             )}
           </>

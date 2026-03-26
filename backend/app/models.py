@@ -8,6 +8,7 @@ class Domain(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), unique=True, nullable=False)
+    domain_prompt = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     agents = relationship("Agent", back_populates="domain", cascade="all, delete-orphan")
@@ -142,6 +143,25 @@ class Task(Base):
 
     agent = relationship("Agent")
     llm_config = relationship("LLMConfig")
+
+
+class TaskRun(Base):
+    """Standalone execution record for a manually-run task."""
+    __tablename__ = "task_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
+    triggered_by = Column(String(20), nullable=False, default="manual")  # manual | scheduler
+    status = Column(String(20), nullable=False, default="pending")       # running | success | failed
+    output = Column(Text, nullable=True)
+    logs = Column(JSON, nullable=True, default=list)
+    error = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    task = relationship("Task")
 
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────

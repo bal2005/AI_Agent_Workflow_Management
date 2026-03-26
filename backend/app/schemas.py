@@ -5,6 +5,7 @@ from typing import Optional
 # Domain schemas
 class DomainCreate(BaseModel):
     name: str
+    domain_prompt: Optional[str] = None
 
     @field_validator("name")
     @classmethod
@@ -13,13 +14,23 @@ class DomainCreate(BaseModel):
             raise ValueError("Domain name cannot be empty")
         return v.strip()
 
+class DomainUpdate(BaseModel):
+    name: Optional[str] = None
+    domain_prompt: Optional[str] = None
+
 class DomainOut(BaseModel):
     id: int
     name: str
+    domain_prompt: Optional[str] = None
     created_at: datetime
     model_config = {"from_attributes": True}
 
 # Agent schemas
+class AgentUpdate(BaseModel):
+    name: Optional[str] = None
+    system_prompt: Optional[str] = None
+    domain_id: Optional[int] = None
+
 class AgentOut(BaseModel):
     id: int
     name: str
@@ -35,6 +46,7 @@ class PlaygroundRequest(BaseModel):
     system_prompt: str   # the agent's skill/instructions
     user_prompt: str
     llm_config_id: Optional[int] = None
+    domain_prompt: Optional[str] = None  # prepended before system_prompt
 
 class PlaygroundResponse(BaseModel):
     result: str
@@ -192,6 +204,21 @@ class TaskDryRunResponse(BaseModel):
     engine: str = "copilot-sdk"
 
 
+class TaskRunOut(BaseModel):
+    id: int
+    task_id: int
+    triggered_by: str
+    status: str
+    output: Optional[str] = None
+    logs: list[str] = []
+    error: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    duration_seconds: Optional[float] = None
+    created_at: datetime
+    model_config = {"from_attributes": True}
+
+
 # ── Scheduler schemas ─────────────────────────────────────────────────────────
 
 class ScheduleTaskItem(BaseModel):
@@ -265,6 +292,7 @@ class ScheduleTaskRunOut(BaseModel):
 class ScheduleRunOut(BaseModel):
     id: int
     schedule_id: int
+    schedule_name: Optional[str] = None
     status: str
     triggered_by: str
     started_at: Optional[datetime] = None
@@ -273,3 +301,10 @@ class ScheduleRunOut(BaseModel):
     created_at: datetime
     task_runs: list[ScheduleTaskRunOut] = []
     model_config = {"from_attributes": True}
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        instance = super().model_validate(obj, **kwargs)
+        if hasattr(obj, "schedule") and obj.schedule:
+            instance.schedule_name = obj.schedule.name
+        return instance

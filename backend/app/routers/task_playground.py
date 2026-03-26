@@ -427,18 +427,40 @@ async def _run_agent_loop(
         "Content-Type": "application/json",
     }
 
+    def _clean_messages(msgs: list) -> list:
+        """
+        Remove any trailing assistant messages that have tool_calls but no
+        corresponding tool response — Groq rejects these with 400.
+        """
+        cleaned = list(msgs)
+        # Collect tool_call_ids that have been responded to
+        responded_ids = {
+            m["tool_call_id"]
+            for m in cleaned
+            if m.get("role") == "tool" and m.get("tool_call_id")
+        }
+        result = []
+        for m in cleaned:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                pending = [tc["id"] for tc in m["tool_calls"] if tc["id"] not in responded_ids]
+                if pending:
+                    # Drop this assistant message — it has unanswered tool calls
+                    continue
+            result.append(m)
+        return result
+
     final_answer = ""
 
     for iteration in range(max_iterations):
+        safe_messages = _clean_messages(messages)
         body: dict = {
             "model": model,
-            "messages": messages,
+            "messages": safe_messages,
         }
-        # Only include tools fields when there are actual tools — Groq rejects null/empty
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
-            body["parallel_tool_calls"] = False  # Groq llama models fail with parallel calls
+            body["parallel_tool_calls"] = False
 
         if config.temperature is not None:
             body["temperature"] = config.temperature
@@ -458,20 +480,48 @@ async def _run_agent_loop(
                 detail = e.response.json()
             except Exception:
                 detail = e.response.text
-            # Groq tool_use_failed — retry once without tools for a plain answer
-            if e.response.status_code == 400 and "tool_use_failed" in str(detail):
+
+            # ── Full diagnostics on 400 ──────────────────────────────────────
+            total_chars = sum(len(str(m.get("content") or "")) for m in safe_messages)
+            print("=" * 60, flush=True)
+            print(f"[400 ERROR] model={model}", flush=True)
+            print(f"[400 ERROR] url={base_url}/chat/completions", flush=True)
+            print(f"[400 ERROR] response body: {detail}", flush=True)
+            print(f"[400 ERROR] message_count={len(safe_messages)}", flush=True)
+            print(f"[400 ERROR] total_content_chars={total_chars}", flush=True)
+            print(f"[400 ERROR] has_tools={bool(tools)} tool_choice={body.get('tool_choice')} parallel={body.get('parallel_tool_calls')}", flush=True)
+            print(f"[400 ERROR] temperature={body.get('temperature')} max_tokens={body.get('max_tokens')}", flush=True)
+            print(f"[400 ERROR] message roles: {[m['role'] for m in safe_messages]}", flush=True)
+            print("=" * 60, flush=True)
+            # ────────────────────────────────────────────────────────────────
+
+            if e.response.status_code == 400:
                 fallback_body = {
                     "model": model,
-                    "messages": messages,
-                    "temperature": body.get("temperature", 0.7),
+                    "messages": [
+                        {"role": "system", "content": skill},
+                        {"role": "user", "content": task},
+                    ],
                 }
+                if config.temperature is not None:
+                    fallback_body["temperature"] = config.temperature
+                print(f"[400 FALLBACK] retrying with clean 2-msg history, no tools", flush=True)
                 try:
                     fb_resp = httpx.post(f"{base_url}/chat/completions", headers=headers, json=fallback_body, timeout=60)
                     fb_resp.raise_for_status()
                     fb_msg = fb_resp.json()["choices"][0]["message"]
                     return (fb_msg.get("content") or "[No response]"), steps
-                except Exception:
-                    pass
+                except httpx.HTTPStatusError as fb_e:
+                    try:
+                        fb_detail = fb_e.response.json()
+                    except Exception:
+                        fb_detail = fb_e.response.text
+                    print(f"[400 FALLBACK ERROR] status={fb_e.response.status_code} body={fb_detail}", flush=True)
+                    print(f"[400 FALLBACK ERROR] fallback_msg_count={len(fallback_body['messages'])} temperature={fallback_body.get('temperature')}", flush=True)
+                    return f"[Fallback error] {fb_detail}", steps
+                except Exception as fb_e:
+                    print(f"[400 FALLBACK ERROR] {fb_e}", flush=True)
+                    return f"[Fallback error] {fb_e}", steps
             return f"[API error {e.response.status_code}] {detail}", steps
 
         data = resp.json()

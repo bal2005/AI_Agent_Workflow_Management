@@ -4,70 +4,61 @@ const s = {
   navbar: {
     display: "flex",
     alignItems: "center",
-    gap: 24,
-    padding: "16px 40px",
-    background: "#0f1117",
+    gap: 0,
+    padding: "0 24px",
+    background: "#0d0f18",
     borderBottom: "1px solid #1e2130",
     flexShrink: 0,
+    height: 52,
   },
-  backBtn: {
-    background: "none",
-    border: "1px solid #2d3748",
-    borderRadius: 8,
-    color: "#94a3b8",
-    padding: "8px 16px",
-    cursor: "pointer",
-    fontSize: 13,
-    fontWeight: 600,
-    transition: "all .15s",
+  logo: {
+    display: "flex", alignItems: "center", gap: 8,
+    fontSize: 14, fontWeight: 800, color: "#f1f5f9",
+    cursor: "pointer", padding: "0 16px 0 0",
+    borderRight: "1px solid #1e2130", marginRight: 12, height: "100%",
+    textDecoration: "none", userSelect: "none",
   },
   navLinks: {
-    display: "flex",
-    gap: 4,
-    flex: 1,
+    display: "flex", gap: 2, flex: 1, overflowX: "auto",
+    scrollbarWidth: "none",
   },
   navLink: (isActive) => ({
-    padding: "8px 16px",
-    borderRadius: 8,
-    fontSize: 13,
+    padding: "6px 13px",
+    borderRadius: 7,
+    fontSize: 12,
     fontWeight: 600,
     cursor: "pointer",
+    whiteSpace: "nowrap",
     background: isActive ? "#4f46e5" : "transparent",
-    color: isActive ? "#fff" : "#94a3b8",
+    color: isActive ? "#fff" : "#64748b",
     border: isActive ? "1px solid #6366f1" : "1px solid transparent",
-    transition: "all .15s",
+    transition: "all .12s",
   }),
 };
 
-export default function Navbar({ onBack, currentPage, onNavigate }) {
-  const pages = [
-    { id: "agents",      label: "🤖 Agent Creation" },
-    { id: "tools",       label: "🔧 Tools Management" },
-    { id: "task-create", label: "📋 Task Creation" },
-    { id: "task",        label: "⚡ Task Playground" },
-    { id: "scheduler",   label: "🗓 Scheduler" },
-    { id: "llm",         label: "🧠 LLM Config" },
-  ];
+const PAGES = [
+  { id: "agents",       label: "🤖 Agents" },
+  { id: "tools",        label: "🔧 Tools" },
+  { id: "task-create",  label: "📋 Tasks" },
+  { id: "task-details", label: "📊 Task Details" },
+  { id: "task",         label: "⚡ Playground" },
+  { id: "scheduler",    label: "🗓 Scheduler" },
+  { id: "run-history",  label: "📋 Run History" },
+  { id: "llm",          label: "🧠 LLM Config" },
+  { id: "admin",        label: "🛠 Admin" },
+];
 
+export default function Navbar({ currentPage, onNavigate }) {
   return (
     <div style={s.navbar}>
-      <button
-        onClick={onBack}
-        style={s.backBtn}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = "#1e2130";
-          e.currentTarget.style.color = "#cbd5e1";
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = "none";
-          e.currentTarget.style.color = "#94a3b8";
-        }}
-      >
-        ← Back
-      </button>
+      {/* Logo → home */}
+      <div style={s.logo} onClick={() => onNavigate("landing")}>
+        <span style={{ fontSize: 18 }}>🤖</span>
+        <span>Agent Studio</span>
+      </div>
 
       <div style={s.navLinks}>
-        {pages.map((page) => (
+        {PAGES.map((page) => (
           <button
             key={page.id}
             onClick={() => onNavigate(page.id)}
@@ -81,7 +72,7 @@ export default function Navbar({ onBack, currentPage, onNavigate }) {
             onMouseLeave={(e) => {
               if (currentPage !== page.id) {
                 e.currentTarget.style.background = "transparent";
-                e.currentTarget.style.color = "#94a3b8";
+                e.currentTarget.style.color = "#64748b";
               }
             }}
           >
