@@ -1,0 +1,30 @@
+'''MCP tool to read a file and return a structured summary.
+
+This module defines a FastMCP server with a single tool `summarize_file`.
+The tool reads the file at the given path, extracts basic statistics, and
+returns a Pydantic model containing the original content (truncated for
+brevity), word count, line count, and a short preview.
+
+Errors such as missing files or permission issues are caught and returned
+as a structured error model so that callers can handle them programmatically.
+'''\n\nfrom __future__ import annotations\n\nimport pathlib\nfrom typing import Optional\n\nfrom pydantic import BaseModel, Field\n\n# Import the MCP server components. The actual `mcp` package is expected to be\n# available in the runtime environment as per the project instructions.\nfrom mcp.server.fastmcp import FastMCP\n\n# ---------------------------------------------------------------------------\n# Pydantic models for the tool's output\n# ---------------------------------------------------------------------------\n\nclass FileSummary(BaseModel):\n    """Successful summary of a file's content."""\n    path: str = Field(..., description="The absolute path of the processed file")\n    preview: str = Field(..., description="First 200 characters of the file (or full content if shorter)")\n    word_count: int = Field(..., description="Number of words in the file")\n    line_count: int = Field(..., description="Number of lines in the file")\n    # The full content is optional because it can be large; include it only if the\n    # caller explicitly requests it via the `include_content` flag (handled in the tool).\n    content: Optional[str] = Field(None, description="Full file content when requested")\n\nclass FileError(BaseModel):\n    """Structured error information when a file cannot be processed."""\n    path: str = Field(..., description="The path that was attempted to read")\n    error: str = Field(..., description="Human‑readable error message")\n\n# ---------------------------------------------------------------------------\n# Helper functions (kept separate for testability)\n# ---------------------------------------------------------------------------\n\ndef _read_file(path: pathlib.Path) -> str:\n    """Read the entire file as text.
+\n    Args:\n        path: Path object pointing to the file to read.\n\n    Returns:\n        The file's content as a string.\n\n    Raises:\n        FileNotFoundError: If the file does not exist.\n        PermissionError: If the file cannot be read due to permissions.\n        OSError: For other I/O‑related errors.\n    """\n    # Using pathlib's read_text ensures proper handling of UTF‑8 and fallback encodings.
+    return path.read_text(encoding="utf-8")\n\ndef _summarize_content(content: str, include_content: bool = False) -> dict:\n    """Create a dictionary with summary statistics.
+\n    Args:\n        content: The full text of the file.\n        include_content: Whether to include the full content in the result.\n\n    Returns:\n        A dict compatible with ``FileSummary`` fields.
+    """\n    words = content.split()\n    lines = content.splitlines()\n    preview = content[:200]  # first 200 characters as a quick preview\n    summary = {\n        "preview": preview,
+        "word_count": len(words),\n        "line_count": len(lines),
+    }\n    if include_content:
+        summary["content"] = content\n    return summary\n\n# ---------------------------------------------------------------------------\n# MCP server definition\n# ---------------------------------------------------------------------------\n\n# The server name is arbitrary; it will appear in diagnostics and the UI.
+mcp = FastMCP(name="File Summary Server")\n\n@mcp.tool()\ndef summarize_file(\n    path: str, *, include_content: bool = False\n) -> FileSummary | FileError:\n    """Read a file and return a structured summary.
+\n    The function is deliberately small – all heavy lifting is delegated to the
+    private helpers above, which makes unit‑testing straightforward.
+\n    Parameters\n    ----------\n    path: str\n        Relative or absolute path to the target file.  The path is resolved
+        against the current working directory.
+    include_content: bool, optional\n        If ``True`` the full file content is returned in the ``content``
+        field; otherwise only a short preview is provided.  Default is ``False``.
+\n    Returns\n    -------\n    FileSummary\n        On success – contains statistics and optionally the full content.\n    FileError\n        On failure – contains the original path and a human‑readable error
+        message.
+    """\n    file_path = pathlib.Path(path).expanduser().resolve()\n    try:\n        raw = _read_file(file_path)\n    except FileNotFoundError:\n        return FileError(path=str(file_path), error="File not found")\n    except PermissionError:\n        return FileError(path=str(file_path), error="Permission denied")\n    except OSError as exc:\n        # Catch any other I/O‑related issues (e.g., encoding errors).
+        return FileError(path=str(file_path), error=f"I/O error: {exc}")\n\n    summary_data = _summarize_content(raw, include_content=include_content)\n    return FileSummary(\n        path=str(file_path),\n        preview=summary_data["preview"],\n        word_count=summary_data["word_count"],\n        line_count=summary_data["line_count"],\n        content=summary_data.get("content"),\n    )\n\n# ---------------------------------------------------------------------------\n# Entry point – run the server when executed directly.\n# ---------------------------------------------------------------------------\n\nif __name__ == "__main__":\n    # By default the FastMCP server uses stdio transport, which is suitable for
+    # the MCP CLI and for unit‑testing via ``mcp dev``.
+    mcp.run()\n

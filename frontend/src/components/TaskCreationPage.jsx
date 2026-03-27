@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { fetchDomains, fetchAgents, fetchLLMConfigs, fetchTasks, createTask, updateTask, deleteTask, dryRunTask } from "../api";
 import { toPlainText } from "../utils/sanitizeLlmResponse";
+import FolderPicker from "./FolderPicker";
 
 const PROVIDERS = [
   { id: "ollama", label: "Ollama" },
@@ -91,6 +92,7 @@ export default function TaskCreationPage({ onViewTask }) {
   const [dryRunResult, setDryRunResult] = useState(null);
   const [dryRunRunning, setDryRunRunning] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
 
   const load = async () => {
     const [d, a, c, t] = await Promise.all([
@@ -330,15 +332,33 @@ export default function TaskCreationPage({ onViewTask }) {
           <div style={s.sectionTitle}>Working Folder</div>
           <div style={s.fieldGroup}>
             <label style={s.label}>Folder Path</label>
-            <input
-              style={s.input}
-              placeholder="e.g. C:\Users\you\projects\myapp  or  /home/user/workspace"
-              value={form.folder_path}
-              onChange={f("folder_path")}
-            />
-            <div style={s.hint}>The local directory the agent can access when running this task.</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                style={{ ...s.input, fontFamily: "monospace", fontSize: 13 }}
+                placeholder="Click Browse to select a folder..."
+                value={form.folder_path}
+                onChange={f("folder_path")}
+              />
+              <button
+                style={{ ...s.btn, ...s.btnSecondary, whiteSpace: "nowrap", fontSize: 13 }}
+                onClick={() => setShowFolderPicker(true)}
+                type="button"
+              >
+                📁 Browse
+              </button>
+            </div>
+            <div style={s.hint}>
+              Folder is mounted from your host machine. Path shown is the container path (under /workspace).
+            </div>
           </div>
         </div>
+
+        {showFolderPicker && (
+          <FolderPicker
+            onSelect={(path) => setForm(prev => ({ ...prev, folder_path: path }))}
+            onClose={() => setShowFolderPicker(false)}
+          />
+        )}
 
         {/* Errors / Success */}
         {formError && <div style={{ ...s.error, marginBottom: 12 }}>⚠ {formError}</div>}

@@ -236,6 +236,7 @@ class ScheduleCreate(BaseModel):
     cron_expression: Optional[str] = None
     is_active: bool = True
     task_ids: list[ScheduleTaskItem] = []
+    workflow_json: Optional[dict] = None  # visual workflow graph from the builder
 
 
 class ScheduleUpdate(BaseModel):
@@ -247,6 +248,7 @@ class ScheduleUpdate(BaseModel):
     cron_expression: Optional[str] = None
     is_active: Optional[bool] = None
     task_ids: Optional[list[ScheduleTaskItem]] = None
+    workflow_json: Optional[dict] = None  # visual workflow graph from the builder
 
     model_config = {"from_attributes": True}
 
@@ -269,6 +271,7 @@ class ScheduleOut(BaseModel):
     cron_expression: Optional[str] = None
     is_active: bool
     next_run_at: Optional[datetime] = None
+    workflow_json: Optional[dict] = None  # visual workflow graph
     created_at: datetime
     updated_at: datetime
     schedule_tasks: list[ScheduleTaskOut] = []
@@ -301,10 +304,3 @@ class ScheduleRunOut(BaseModel):
     created_at: datetime
     task_runs: list[ScheduleTaskRunOut] = []
     model_config = {"from_attributes": True}
-
-    @classmethod
-    def model_validate(cls, obj, **kwargs):
-        instance = super().model_validate(obj, **kwargs)
-        if hasattr(obj, "schedule") and obj.schedule:
-            instance.schedule_name = obj.schedule.name
-        return instance

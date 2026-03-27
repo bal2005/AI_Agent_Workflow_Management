@@ -90,7 +90,6 @@ def _build_sdk_tools(task: models.Task) -> list:
             "required": [],
         },
         handler=handle_list_directory,
-        skip_permission=True,
     ))
 
     # read_file
@@ -108,7 +107,6 @@ def _build_sdk_tools(task: models.Task) -> list:
             "required": ["path"],
         },
         handler=handle_read_file,
-        skip_permission=True,
     ))
 
     if mode == "allowed":
@@ -130,7 +128,6 @@ def _build_sdk_tools(task: models.Task) -> list:
                 "required": ["path", "content"],
             },
             handler=handle_write_file,
-            skip_permission=True,
         ))
 
         # edit_file
@@ -152,7 +149,6 @@ def _build_sdk_tools(task: models.Task) -> list:
                 "required": ["path", "old_text", "new_text"],
             },
             handler=handle_edit_file,
-            skip_permission=True,
         ))
 
         # append_to_file
@@ -173,7 +169,6 @@ def _build_sdk_tools(task: models.Task) -> list:
                 "required": ["path", "content"],
             },
             handler=handle_append_to_file,
-            skip_permission=True,
         ))
 
     return tools

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { fetchDomains, fetchAgentsByDomain, runTaskPlayground } from "../api";
 import { toPlainText } from "../utils/sanitizeLlmResponse";
+import FolderPicker from "./FolderPicker";
 
 const c = {
   page: { minHeight: "100vh", background: "#0f1117", color: "#e2e8f0", fontFamily: "Inter, sans-serif", padding: "32px 40px", maxWidth: 900 },
@@ -74,8 +75,9 @@ export default function TaskPlaygroundPage({ onBack }) {
   });
 
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState(null);   // { result, steps, engine }
+  const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
 
   useEffect(() => {
     fetchDomains().then(setDomains).catch(() => {});
@@ -179,13 +181,29 @@ export default function TaskPlaygroundPage({ onBack }) {
 
         <div style={{ marginBottom: 16 }}>
           <label style={c.label}>Root Path (local directory the agent can access)</label>
-          <input
-            style={{ ...c.input, marginTop: 6 }}
-            placeholder="e.g. C:\Users\you\projects\myapp  or  /home/user/workspace"
-            value={rootPath}
-            onChange={e => setRootPath(e.target.value)}
-          />
+          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+            <input
+              style={{ ...c.input, fontFamily: "monospace", fontSize: 13, flex: 1 }}
+              placeholder="Click Browse to select a folder from workspace..."
+              value={rootPath}
+              onChange={e => setRootPath(e.target.value)}
+            />
+            <button
+              style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid #2d3148", background: "#1e2130", color: "#94a3b8", fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" }}
+              onClick={() => setShowFolderPicker(true)}
+              type="button"
+            >
+              📁 Browse
+            </button>
+          </div>
         </div>
+
+        {showFolderPicker && (
+          <FolderPicker
+            onSelect={(path) => setRootPath(path)}
+            onClose={() => setShowFolderPicker(false)}
+          />
+        )}
 
         <div>
           <label style={{ ...c.label, marginBottom: 10, display: "block" }}>Granted Permissions</label>

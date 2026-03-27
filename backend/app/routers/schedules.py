@@ -106,7 +106,16 @@ def list_all_runs(
         q = q.filter(models.ScheduleRun.status == status)
     if triggered_by:
         q = q.filter(models.ScheduleRun.triggered_by == triggered_by)
-    return q.limit(limit).all()
+    runs = q.limit(limit).all()
+
+    # Manually build response dicts so schedule_name is always populated
+    result = []
+    for run in runs:
+        d = schemas.ScheduleRunOut.model_validate(run)
+        if not d.schedule_name and run.schedule:
+            d.schedule_name = run.schedule.name
+        result.append(d)
+    return result
 
 
 @router.post("/", response_model=schemas.ScheduleOut, status_code=201)
@@ -122,6 +131,7 @@ def create_schedule(payload: schemas.ScheduleCreate, db: Session = Depends(get_d
         interval_unit=payload.interval_unit,
         cron_expression=payload.cron_expression,
         is_active=payload.is_active,
+        workflow_json=payload.workflow_json,
     )
     db.add(schedule)
     db.flush()  # get id before syncing tasks
@@ -139,14 +149,18 @@ def get_run(run_id: int, db: Session = Depends(get_db)):
     run = (
         db.query(models.ScheduleRun)
         .options(
-            joinedload(models.ScheduleRun.task_runs).joinedload(models.ScheduleTaskRun.task)
+            joinedload(models.ScheduleRun.task_runs).joinedload(models.ScheduleTaskRun.task),
+            joinedload(models.ScheduleRun.schedule),
         )
         .filter(models.ScheduleRun.id == run_id)
         .first()
     )
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    return run
+    d = schemas.ScheduleRunOut.model_validate(run)
+    if not d.schedule_name and run.schedule:
+        d.schedule_name = run.schedule.name
+    return d
 
 
 @router.get("/{schedule_id}", response_model=schemas.ScheduleOut)
@@ -156,11 +170,17 @@ def get_schedule(schedule_id: int, db: Session = Depends(get_db)):
 
 @router.patch("/{schedule_id}", response_model=schemas.ScheduleOut)
 def update_schedule(schedule_id: int, payload: schemas.ScheduleUpdate, db: Session = Depends(get_db)):
+    import logging
+    logger = logging.getLogger(__name__)
     schedule = _load(schedule_id, db)
     data = payload.model_dump(exclude_unset=True)
+    logger.info(f"[PATCH schedule {schedule_id}] received fields: {list(data.keys())}")
+    logger.info(f"[PATCH schedule {schedule_id}] workflow_json in payload: {'workflow_json' in data}, value: {data.get('workflow_json')}")
     task_ids = data.pop("task_ids", None)
 
     for k, v in data.items():
+        if k == "workflow_json" and v is None and schedule.workflow_json is not None:
+            continue
         setattr(schedule, k, v)
 
     if task_ids is not None:
@@ -168,8 +188,9 @@ def update_schedule(schedule_id: int, payload: schemas.ScheduleUpdate, db: Sessi
 
     schedule.next_run_at = _compute_next_run(schedule)
     db.commit()
-    return _load(schedule_id, db)
-
+    result = _load(schedule_id, db)
+    logger.info(f"[PATCH schedule {schedule_id}] after save workflow_json: {result.workflow_json}")
+    return result
 
 @router.delete("/{schedule_id}", status_code=204)
 def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
@@ -285,13 +306,21 @@ def debug_status(db: Session = Depends(get_db)):
 @router.get("/{schedule_id}/runs", response_model=list[schemas.ScheduleRunOut])
 def list_runs(schedule_id: int, limit: int = 20, db: Session = Depends(get_db)):
     _load(schedule_id, db)  # 404 check
-    return (
+    runs = (
         db.query(models.ScheduleRun)
         .options(
-            joinedload(models.ScheduleRun.task_runs).joinedload(models.ScheduleTaskRun.task)
+            joinedload(models.ScheduleRun.task_runs).joinedload(models.ScheduleTaskRun.task),
+            joinedload(models.ScheduleRun.schedule),
         )
         .filter(models.ScheduleRun.schedule_id == schedule_id)
         .order_by(models.ScheduleRun.created_at.desc())
         .limit(limit)
         .all()
     )
+    result = []
+    for run in runs:
+        d = schemas.ScheduleRunOut.model_validate(run)
+        if not d.schedule_name and run.schedule:
+            d.schedule_name = run.schedule.name
+        result.append(d)
+    return result

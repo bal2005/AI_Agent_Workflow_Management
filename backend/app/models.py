@@ -181,6 +181,8 @@ class Schedule(Base):
     cron_expression = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True)
     next_run_at = Column(DateTime(timezone=True), nullable=True)
+    # Visual workflow graph — { "nodes": [...] } — stored as JSON, managed by the frontend builder
+    workflow_json = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -220,6 +222,10 @@ class ScheduleRun(Base):
     schedule = relationship("Schedule", back_populates="runs")
     task_runs = relationship("ScheduleTaskRun", back_populates="run", cascade="all, delete-orphan",
                              order_by="ScheduleTaskRun.position")
+
+    @property
+    def schedule_name(self) -> str | None:
+        return self.schedule.name if self.schedule else None
 
 
 class ScheduleTaskRun(Base):

@@ -19,7 +19,13 @@ def run_schedule(self, schedule_id: int, triggered_by: str = "scheduler"):
         if not schedule:
             return {"error": f"Schedule {schedule_id} not found"}
 
-        ordered_tasks = sorted(schedule.schedule_tasks, key=lambda st: st.position)
+        # Snapshot task_id + position as plain values immediately.
+        # Do NOT hold references to ScheduleTask ORM objects across commits —
+        # _sync_tasks deletes and re-inserts rows, which detaches those instances.
+        ordered_task_refs = [
+            (st.task_id, st.position)
+            for st in sorted(schedule.schedule_tasks, key=lambda st: st.position)
+        ]
 
         # Create ScheduleRun record
         run = models.ScheduleRun(
@@ -37,8 +43,8 @@ def run_schedule(self, schedule_id: int, triggered_by: str = "scheduler"):
         # Workflow context: accumulates prior task outputs for data flow
         workflow_context: dict[int, dict] = {}  # position → structured result
 
-        for st in ordered_tasks:
-            task = db.query(models.Task).filter(models.Task.id == st.task_id).first()
+        for task_id, position in ordered_task_refs:
+            task = db.query(models.Task).filter(models.Task.id == task_id).first()
             if not task:
                 continue
 
@@ -62,7 +68,7 @@ def run_schedule(self, schedule_id: int, triggered_by: str = "scheduler"):
             task_run = models.ScheduleTaskRun(
                 run_id=run.id,
                 task_id=task.id,
-                position=st.position,
+                position=position,
                 status="running",
                 started_at=datetime.now(timezone.utc),
             )

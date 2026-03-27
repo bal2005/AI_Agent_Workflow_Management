@@ -14,6 +14,7 @@ export default defineConfig({
       "/tasks":          { target: "http://localhost:8000", changeOrigin: true },
       "/schedules":      { target: "http://localhost:8000", changeOrigin: true },
       "/health":         { target: "http://localhost:8000", changeOrigin: true },
+      "/fs":             { target: "http://localhost:8000", changeOrigin: true },
     },
   },
 });

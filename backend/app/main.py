@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import domains, agents, llm_configs, tools, task_playground, tasks, schedules
+from app.routers import domains, agents, llm_configs, tools, task_playground, tasks, schedules, filesystem
 
 app = FastAPI(title="Agent Studio API")
 
@@ -19,6 +19,7 @@ app.include_router(tools.router)
 app.include_router(task_playground.router)
 app.include_router(tasks.router)
 app.include_router(schedules.router)
+app.include_router(filesystem.router)
 
 @app.get("/health")
 def health():

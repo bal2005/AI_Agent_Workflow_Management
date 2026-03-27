@@ -7,9 +7,11 @@ services:
       dockerfile: Dockerfile
     container_name: agent_studio_backend
     ports:
-      - "8000:8000"     # FastAPI
+      - "8000:8000"
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
-    # Override .env values if needed via environment block
-    # env_file: ./backend/.env.docker  (already baked in via Dockerfile)
+      - WORKSPACE_ROOT=/workspace
+    volumes:
+      # Only the sandbox_data folder is exposed — safe and controlled
+      - ./sandbox_data:/workspace
