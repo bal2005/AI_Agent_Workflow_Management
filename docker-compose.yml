@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   backend:
     build:
@@ -12,6 +10,26 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - WORKSPACE_ROOT=/workspace
+      - OLLAMA_HOST=http://host.docker.internal:11434/v1
+      # Path on the HOST machine where sandbox workspaces are created.
+      - SANDBOX_BASE=/sandbox_host
+      # HOST_SANDBOX_BASE — the host machine's absolute path to sandbox_data.
+      # Docker daemon uses this for volume mounts when spawning sandbox containers.
+      - HOST_SANDBOX_BASE=C:/Users/mbalasubramanian/Documents/AI_Agent_Workflow_Management/sandbox_data
+      # Docker image used for sandbox agent runner containers
+      - AGENT_IMAGE=agent-runner:latest
+      # Set to "true" to run each task in an isolated Docker container.
+      # Set to "false" (default) to run tasks in-process (current behaviour).
+      - SANDBOX_MODE=true
     volumes:
-      # Only the sandbox_data folder is exposed — safe and controlled
+      # App workspace (tasks read/write files here)
       - ./sandbox_data:/workspace
+      # Sandbox workspaces — backend creates subdirs here, then mounts them
+      # into child containers. The HOST path must be used in docker run -v,
+      # so we pass the host path via SANDBOX_BASE env var.
+      - ./sandbox_data:/sandbox_host
+      # Docker socket — allows the backend to spawn sandbox containers on the host
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      # Lets the container reach Ollama (or any service) on the host machine
+      - "host.docker.internal:host-gateway"

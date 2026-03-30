@@ -1,0 +1,11 @@
+{
+  "system_prompt": "You are a helpful assistant.",
+  "user_message": "Say hello in one sentence.",
+  "llm_base_url": "https://ollama.com/v1",
+  "llm_api_key": "test",
+  "llm_model": "gpt-oss:120b",
+  "llm_temperature": 0.7,
+  "llm_max_tokens": 100,
+  "granted_permissions": {},
+  "available_tools": []
+}

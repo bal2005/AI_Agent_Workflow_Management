@@ -12,31 +12,39 @@ from app import models
 
 
 @celery.task(bind=True, name="app.scheduler_tasks.run_schedule")
-def run_schedule(self, schedule_id: int, triggered_by: str = "scheduler"):
+def run_schedule(self, schedule_id: int, triggered_by: str = "scheduler", run_id: int = None):
     db = SessionLocal()
     try:
         schedule = db.query(models.Schedule).filter(models.Schedule.id == schedule_id).first()
         if not schedule:
             return {"error": f"Schedule {schedule_id} not found"}
 
-        # Snapshot task_id + position as plain values immediately.
-        # Do NOT hold references to ScheduleTask ORM objects across commits —
-        # _sync_tasks deletes and re-inserts rows, which detaches those instances.
         ordered_task_refs = [
             (st.task_id, st.position)
             for st in sorted(schedule.schedule_tasks, key=lambda st: st.position)
         ]
 
-        # Create ScheduleRun record
-        run = models.ScheduleRun(
-            schedule_id=schedule_id,
-            status="running",
-            triggered_by=triggered_by,
-            started_at=datetime.now(timezone.utc),
-        )
-        db.add(run)
-        db.commit()
-        db.refresh(run)
+        # Reuse a pre-created run record if provided (from run_now endpoint),
+        # otherwise create a fresh one (for scheduler-triggered runs).
+        if run_id:
+            run = db.query(models.ScheduleRun).filter(models.ScheduleRun.id == run_id).first()
+            if run:
+                run.status = "running"
+                run.started_at = datetime.now(timezone.utc)
+                db.commit()
+            else:
+                run_id = None  # fallback to creating new
+
+        if not run_id:
+            run = models.ScheduleRun(
+                schedule_id=schedule_id,
+                status="running",
+                triggered_by=triggered_by,
+                started_at=datetime.now(timezone.utc),
+            )
+            db.add(run)
+            db.commit()
+            db.refresh(run)
 
         overall_status = "success"
         run_error = None
@@ -78,8 +86,13 @@ def run_schedule(self, schedule_id: int, triggered_by: str = "scheduler"):
 
             t_start = time.time()
             try:
-                from app.workflow_runner import run_task_in_workflow
-                result = run_task_in_workflow(task, db, prior_output=prior_output)
+                import os
+                if os.environ.get("SANDBOX_MODE", "").lower() == "true":
+                    from app.workflow_runner import run_task_in_sandbox
+                    result = run_task_in_sandbox(task, db, run_id=str(run.id), prior_output=prior_output)
+                else:
+                    from app.workflow_runner import run_task_in_workflow
+                    result = run_task_in_workflow(task, db, prior_output=prior_output)
 
                 if result.get("success"):
                     task_run.status = "success"
@@ -90,7 +103,7 @@ def run_schedule(self, schedule_id: int, triggered_by: str = "scheduler"):
 
                 task_run.output = result.get("final_text", "")
                 task_run.logs = result.get("logs", [])
-                workflow_context[st.position] = result
+                workflow_context[position] = result
 
             except Exception as e:
                 task_run.status = "failed"

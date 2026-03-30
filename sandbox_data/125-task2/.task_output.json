@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "final_text": "Implemented a modular, MCP\u2011compatible tool in **`/workspace/file_summary_tool.py`**.\n\n### Key Features\n- **FastMCP server instance** for easy registration.\n- **`FileSummary` Pydantic model** provides structured output (path, size, line count, preview, error).\n- **`summarize_file` tool**:\n  1. Accepts a file path.\n  2. Reads file content safely.\n  3. Returns a detailed summary or graceful error information.\n- Comprehensive docstrings and type hints for schema generation and validation.\n- Runs via stdio transport by default (`mcp.run()`).\n\nThis file can be imported into any MCP server setup, and the tool will be automatically available for agents.",
+  "tool_usage": [
+    "\ud83d\udd27 list_directory() \u2192 FILE .task_input.json\nFILE run.log",
+    "\ud83d\udd27 write_file() \u2192 Written 2864 chars to '/workspace/file_summary_tool.py'"
+  ]
+}

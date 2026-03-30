@@ -274,8 +274,10 @@ async def execute_task_with_copilot(
     # ── Hooks ─────────────────────────────────────────────────────────────────
 
     async def on_pre_tool_use(input_data, invocation):
+        # Guard: SDK may pass a string instead of dict in error states
+        if not isinstance(input_data, dict):
+            return {"permissionDecision": "allow"}
         tool_name = input_data.get("toolName", "")
-        # Block built-in CLI tools and anything not in allowed list
         if tool_name in _BLOCKED_BUILTIN_TOOLS or (allowed_tool_names and tool_name not in allowed_tool_names):
             logger.info(f"[WorkflowRunner] Blocking tool: {tool_name}")
             tool_usage_log.append(f"⛔ blocked: {tool_name}")
@@ -283,16 +285,20 @@ async def execute_task_with_copilot(
         return {"permissionDecision": "allow", "modifiedArgs": input_data.get("toolArgs")}
 
     async def on_post_tool_use(input_data, invocation):
+        if not isinstance(input_data, dict):
+            return {}
         tool_name = input_data.get("toolName", "")
         tool_usage_log.append(f"🔧 {tool_name}()")
         return {}
 
     async def on_error_occurred(input_data, invocation):
+        if not isinstance(input_data, dict):
+            tool_usage_log.append(f"⚠ SDK error: {str(input_data)[:120]}")
+            return {"errorHandling": "skip"}
         error = input_data.get("error", "")
         ctx = input_data.get("errorContext", "")
         logger.warning(f"[WorkflowRunner] SDK error in {ctx}: {error}")
         tool_usage_log.append(f"⚠ error skipped: {ctx} — {str(error)[:120]}")
-        # Skip tool_use_failed and similar — let model continue without the tool
         return {"errorHandling": "skip"}
 
     # ── Session config ─────────────────────────────────────────────────────────
@@ -382,23 +388,37 @@ async def _execute_task_fallback(
     system_prompt: str,
     user_message: str,
 ) -> dict:
-    """
-    Fallback to direct httpx agent loop when Copilot SDK is unavailable
-    or raises a non-recoverable error.
-    """
     from app.routers.task_playground import _build_fs_tools, _run_agent_loop
 
     tools = []
-    if task.tool_usage_mode != "none" and task.folder_path:
-        root = Path(task.folder_path)
-        if root.exists() and root.is_dir():
+    root_path = None
+
+    if task.folder_path:
+        # Always resolve to absolute — prevents ".." escape from relative roots
+        root_path = Path(task.folder_path).resolve()
+        if root_path.exists() and root_path.is_dir() and task.tool_usage_mode != "none":
             perms = ["read_files", "browse_folders"]
             if task.tool_usage_mode == "allowed":
                 perms += ["write_files"]
-            tools = _build_fs_tools(root, perms)
+            tools = _build_fs_tools(root_path, perms)
+        else:
+            root_path = None
 
-    root_path = Path(task.folder_path) if task.folder_path else Path(".")
-    result, steps = await _run_agent_loop(cfg, system_prompt, user_message, root_path, tools)
+    # Never use Path(".") as root — it allows ".." to escape to parent dirs
+    if root_path is None:
+        import tempfile
+        root_path = Path(tempfile.gettempdir()).resolve()
+
+    # Patch base_url: rewrite localhost → host.docker.internal for Docker
+    patched_cfg = SimpleNamespace(
+        base_url=(cfg.base_url or "").replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal").rstrip("/") or "https://api.openai.com/v1",
+        api_key=cfg.api_key,
+        model_name=cfg.model_name,
+        temperature=cfg.temperature,
+        max_tokens=cfg.max_tokens,
+    )
+
+    result, steps = await _run_agent_loop(patched_cfg, system_prompt, user_message, root_path, tools)
 
     return {
         "success": True,
@@ -473,3 +493,97 @@ def run_task_in_workflow(
                 "metadata": {"task_id": task.id, "task_name": task.name},
                 "error": str(fe),
             }
+
+
+# ── Sandbox entry point ───────────────────────────────────────────────────────
+
+def run_task_in_sandbox(
+    task: models.Task,
+    db,
+    run_id: str,
+    prior_output: Optional[str] = None,
+) -> dict:
+    """
+    Execute one task inside an isolated Docker sandbox container.
+
+    Differences from run_task_in_workflow:
+    - Permissions are loaded fresh from DB (not inferred from tool_usage_mode)
+    - Task payload is written to /workspace/.task_input.json
+    - Agent runner executes inside the container
+    - Output is read from /workspace/.task_output.json
+
+    Falls back to run_task_in_workflow if Docker is unavailable.
+    """
+    from app.sandbox.manager import SandboxManager
+    from app.sandbox.permissions import PermissionChecker
+
+    cfg = _resolve_cfg(task, db)
+
+    domain_prompt = task.agent.domain.domain_prompt if (task.agent and task.agent.domain) else None
+    agent_prompt  = task.agent.system_prompt if task.agent else ""
+    if task.llm_system_behavior:
+        agent_prompt = (agent_prompt + "\n\n" + task.llm_system_behavior).strip()
+
+    system_prompt, _ = compose_agent_prompt(domain_prompt, agent_prompt)
+    user_message = _build_user_message(task, prior_output)
+
+    # Load permissions from DB — never from request
+    checker = (
+        PermissionChecker.from_db(db, task.agent_id)
+        if task.agent_id
+        else PermissionChecker.deny_all(0)
+    )
+
+    # Build granted_permissions dict for the agent runner
+    granted_permissions = {k: list(v) for k, v in checker.grants.items()}
+
+    # Determine which tools the agent may attempt (based on task config)
+    available_tools: list[str] = []
+    if task.tool_usage_mode != "none":
+        available_tools = ["list_directory", "read_file"]
+        if task.tool_usage_mode == "allowed":
+            available_tools += ["write_file"]
+
+    task_payload = {
+        "system_prompt":       system_prompt,
+        "user_message":        user_message,
+        "llm_base_url":        (cfg.base_url or "https://api.openai.com/v1").rstrip("/"),
+        "llm_api_key":         cfg.api_key,
+        "llm_model":           cfg.model_name or "gpt-4o",
+        "llm_temperature":     cfg.temperature,
+        "llm_max_tokens":      cfg.max_tokens,
+        "granted_permissions": granted_permissions,
+        "available_tools":     available_tools,
+        "task_id":             task.id,
+        "task_name":           task.name,
+        "run_id":              run_id,
+    }
+
+    # Need network if LLM is a remote endpoint (not localhost)
+    base_url = (cfg.base_url or "").lower()
+    needs_network = (
+        checker.allowed("web", "perform_search")
+        or not any(h in base_url for h in ("localhost", "127.0.0.1", "host.docker.internal"))
+    )
+
+    sandbox = SandboxManager(run_id=f"{run_id}-task{task.id}")
+    result  = sandbox.run(task_payload, network_access=needs_network)
+
+    # Normalise result shape to match run_task_in_workflow output
+    return {
+        "success":          result.get("success", False),
+        "final_text":       result.get("final_text", result.get("error", "")),
+        "structured_output": {},
+        "tool_usage":       result.get("tool_usage", []),
+        "logs":             result.get("tool_usage", []),
+        "metadata": {
+            "model":      cfg.model_name,
+            "provider":   cfg.provider,
+            "agent_name": task.agent.name if task.agent else None,
+            "task_id":    task.id,
+            "task_name":  task.name,
+            "engine":     "sandbox",
+            "run_id":     run_id,
+        },
+        "error": result.get("error"),
+    }

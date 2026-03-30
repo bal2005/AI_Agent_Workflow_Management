@@ -221,9 +221,8 @@ def run_now(schedule_id: int, background_tasks: BackgroundTasks, db: Session = D
     # Try Celery first, fall back to background task
     try:
         from app.scheduler_tasks import run_schedule
-        run_schedule.delay(schedule_id, "manual")
+        run_schedule.delay(schedule_id, "manual", run.id)
     except Exception:
-        # Celery not available — run in FastAPI background thread
         background_tasks.add_task(_run_in_background, schedule_id, run.id)
 
     # Re-fetch with task_runs loaded

@@ -3,3 +3,11 @@ docker run -d -p 8000:8000 --name agent-studio agent-studio
 docker logs -f agent-studio
 
 uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+
+# First time or after code changes:
+docker stop agent_studio_backend && docker rm agent_studio_backend
+docker-compose up --build -d
+
+# Quick restart (no code changes):
+docker-compose restart

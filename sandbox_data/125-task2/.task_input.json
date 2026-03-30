@@ -1,0 +1,34 @@
+{
+  "system_prompt": "You are in a software engineering domain. Generate clean, readable, and efficient code following best practices. Prioritize correctness, clarity, and maintainability. Explain only when necessary. Avoid unnecessary complexity and do not hallucinate APIs or libraries.\n\n---\ndescription: 'Instructions for building Model Context Protocol (MCP) servers using the Python SDK'\napplyTo: '**/*.py, **/pyproject.toml, **/requirements.txt'\n---\n\n# Python MCP Server Development\n\n## Instructions\n\n- Use **uv** for project management: `uv init mcp-server-demo` and `uv add \"mcp[cli]\"`\n- Import FastMCP from `mcp.server.fastmcp`: `from mcp.server.fastmcp import FastMCP`\n- Use `@mcp.tool()`, `@mcp.resource()`, and `@mcp.prompt()` decorators for registration\n- Type hints are mandatory - they're used for schema generation and validation\n- Use Pydantic models, TypedDicts, or dataclasses for structured output\n- Tools automatically return structured output when return types are compatible\n- For stdio transport, use `mcp.run()` or `mcp.run(transport=\"stdio\")`\n- For HTTP servers, use `mcp.run(transport=\"streamable-http\")` or mount to Starlette/FastAPI\n- Use `Context` parameter in tools/resources to access MCP capabilities: `ctx: Context`\n- Send logs with `await ctx.debug()`, `await ctx.info()`, `await ctx.warning()`, `await ctx.error()`\n- Report progress with `await ctx.report_progress(progress, total, message)`\n- Request user input with `await ctx.elicit(message, schema)`\n- Use LLM sampling with `await ctx.session.create_message(messages, max_tokens)`\n- Configure icons with `Icon(src=\"path\", mimeType=\"image/png\")` for server, tools, resources, prompts\n- Use `Image` class for automatic image handling: `return Image(data=bytes, format=\"png\")`\n- Define resource templates with URI patterns: `@mcp.resource(\"greeting://{name}\")`\n- Implement completion support by accepting partial values and returning suggestions\n- Use lifespan context managers for startup/shutdown with shared resources\n- Access lifespan context in tools via `ctx.request_context.lifespan_context`\n- For stateless HTTP servers, set `stateless_http=True` in FastMCP initialization\n- Enable JSON responses for modern clients: `json_response=True`\n- Test servers with: `uv run mcp dev server.py` (Inspector) or `uv run mcp install server.py` (Claude Desktop)\n- Mount multiple servers in Starlette with different paths: `Mount(\"/path\", mcp.streamable_http_app())`\n- Configure CORS for browser clients: expose `Mcp-Session-Id` header\n- Use low-level Server class for maximum control when FastMCP isn't sufficient\n\n## Best Practices\n\n- Always use type hints - they drive schema generation and validation\n- Return Pydantic models or TypedDicts for structured tool outputs\n- Keep tool functions focused on single responsibilities\n- Provide clear docstrings - they become tool descriptions\n- Use descriptive parameter names with type hints\n- Validate inputs using Pydantic Field descriptions\n- Implement proper error handling with try-except blocks\n- Use async functions for I/O-bound operations\n- Clean up resources in lifespan context managers\n- Log to stderr to avoid interfering with stdio transport (when using stdio)\n- Use environment variables for configuration\n- Test tools independently before LLM integration\n- Consider security when exposing file system or network access\n- Use structured output for machine-readable data\n- Provide both content and structured data for backward compatibility\n\n## Common Patterns\n\n### Basic Server Setup (stdio)\n```python\nfrom mcp.server.fastmcp import FastMCP\n\nmcp = FastMCP(\"My Server\")\n\n@mcp.tool()\ndef calculate(a: int, b: int, op: str) -> int:\n    \"\"\"Perform calculation\"\"\"\n    if op == \"add\":\n        return a + b\n    return a - b\n\nif __name__ == \"__main__\":\n    mcp.run()  # stdio by default\n```\n\n### HTTP Server\n```python\nfrom mcp.server.fastmcp import FastMCP\n\nmcp = FastMCP(\"My HTTP Server\")\n\n@mcp.tool()\ndef hello(name: str = \"World\") -> str:\n    \"\"\"Greet someone\"\"\"\n    return f\"Hello, {name}!\"\n\nif __name__ == \"__main__\":\n    mcp.run(transport=\"streamable-http\")\n```\n\n### Tool with Structured Output\n```python\nfrom pydantic import BaseModel, Field\n\nclass WeatherData(BaseModel):\n    temperature: float = Field(description=\"Temperature in Celsius\")\n    con\n[agent prompt truncated]",
+  "user_message": "Create a Python-based MCP-compatible tool that reads a given file path, extracts its content, and returns a structured summary. The tool should handle errors gracefully if the file does not exist or is not readable. Ensure the implementation is modular and can be registered as a tool in an agent framework.\n\nFollow these steps:\n1. Create a new file\n2.This tool should do 3 things:\naccept a file path\nread the file content\nreturn a structured summary\n3.Write code and add error handling\n\nWorking directory: /workspace",
+  "llm_base_url": "https://ollama.com/v1",
+  "llm_api_key": "b6148b819f594fbcbbd794c0a96a0639.nL4aFbdOAfvR9l9qfV8tJwOz",
+  "llm_model": "gpt-oss:120b",
+  "llm_temperature": 0.1,
+  "llm_max_tokens": null,
+  "granted_permissions": {
+    "filesystem": [
+      "read_files",
+      "browse_folders",
+      "write_files"
+    ],
+    "shell": [
+      "allow_readonly",
+      "execute_commands",
+      "allow_write_impact"
+    ],
+    "web_search": [
+      "perform_search"
+    ],
+    "github": [],
+    "email": []
+  },
+  "available_tools": [
+    "list_directory",
+    "read_file",
+    "write_file"
+  ],
+  "task_id": 2,
+  "task_name": "Python MCP Code Generation",
+  "run_id": "125"
+}

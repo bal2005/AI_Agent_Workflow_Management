@@ -1,18 +1,20 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 
 const features = [
-  { icon: "🤖", label: "Agent Creation",   desc: "Build AI agents with domain context and custom skills",       page: "agents" },
-  { icon: "🔧", label: "Tools Management", desc: "Grant agents filesystem, shell, and web tool permissions",    page: "tools" },
-  { icon: "📋", label: "Task Creation",    desc: "Define tasks with prompts, workflows, and LLM overrides",     page: "task-create" },
-  { icon: "⚡", label: "Task Playground",  desc: "Run tasks interactively against a live filesystem",           page: "task" },
-  { icon: "📊", label: "Task Details",     desc: "View run history, logs, and reproducibility snapshots",       page: "task-details" },
-  { icon: "🗓", label: "Scheduler",        desc: "Schedule tasks with interval, cron, or manual triggers",      page: "scheduler" },
-  { icon: "📋", label: "Run History",      desc: "Browse all execution runs with detailed trace logs",          page: "run-history" },
-  { icon: "🧠", label: "LLM Config",       desc: "Configure BYOK providers — OpenAI, Groq, Claude, Ollama",    page: "llm" },
-  { icon: "🛠", label: "Admin",            desc: "Manage agents and domains, update prompts in bulk",           page: "admin" },
+  { icon: "🤖", label: "Agent Creation",   desc: "Build AI agents with domain context and custom skills",    path: "/agents" },
+  { icon: "🔧", label: "Tools Management", desc: "Grant agents filesystem, shell, and web tool permissions", path: "/tools" },
+  { icon: "📋", label: "Task Creation",    desc: "Define tasks with prompts, workflows, and LLM overrides",  path: "/task-create" },
+  { icon: "⚡", label: "Task Playground",  desc: "Run tasks interactively against a live filesystem",        path: "/task" },
+  { icon: "🗓", label: "Scheduler",        desc: "Schedule tasks with interval, cron, or manual triggers",   path: "/scheduler" },
+  { icon: "📋", label: "Run History",      desc: "Browse all execution runs with detailed trace logs",       path: "/run-history" },
+  { icon: "🧠", label: "LLM Config",       desc: "Configure BYOK providers — OpenAI, Groq, Claude, Ollama", path: "/llm" },
+  { icon: "🛠", label: "Admin",            desc: "Manage agents and domains, update prompts in bulk",        path: "/admin" },
 ];
 
-export default function LandingPage({ onNavigate }) {
+export default function LandingPage() {
+  const navigate = useNavigate();
+
   return (
     <div style={{
       flex: 1, overflowY: "auto", background: "#0f1117", color: "#e2e8f0",
@@ -30,7 +32,7 @@ export default function LandingPage({ onNavigate }) {
           prompts, tools, tasks, and scheduling — all in one place.
         </p>
         <button
-          onClick={() => onNavigate("agents")}
+          onClick={() => navigate("/agents")}
           style={{
             marginTop: 28, padding: "12px 32px", borderRadius: 10,
             background: "#6366f1", border: "none", color: "#fff",
@@ -45,26 +47,17 @@ export default function LandingPage({ onNavigate }) {
       </div>
 
       {/* Feature grid */}
-      <div style={{
-        display: "grid", gridTemplateColumns: "repeat(3, 1fr)",
-        gap: 16, width: "100%", maxWidth: 900,
-      }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, width: "100%", maxWidth: 900 }}>
         {features.map(f => (
           <div
-            key={f.page}
-            onClick={() => onNavigate(f.page)}
+            key={f.path}
+            onClick={() => navigate(f.path)}
             style={{
               background: "#1e2130", border: "1px solid #2d3148", borderRadius: 12,
               padding: "22px 24px", cursor: "pointer", transition: "border-color .15s, transform .15s",
             }}
-            onMouseEnter={e => {
-              e.currentTarget.style.borderColor = "#6366f1";
-              e.currentTarget.style.transform = "translateY(-2px)";
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.borderColor = "#2d3148";
-              e.currentTarget.style.transform = "translateY(0)";
-            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = "#6366f1"; e.currentTarget.style.transform = "translateY(-2px)"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "#2d3148"; e.currentTarget.style.transform = "translateY(0)"; }}
           >
             <div style={{ fontSize: 26, marginBottom: 10 }}>{f.icon}</div>
             <div style={{ fontSize: 14, fontWeight: 700, color: "#f1f5f9", marginBottom: 6 }}>{f.label}</div>
@@ -73,7 +66,6 @@ export default function LandingPage({ onNavigate }) {
         ))}
       </div>
 
-      {/* Footer */}
       <div style={{ marginTop: 60, fontSize: 12, color: "#334155" }}>
         Agent Studio · AI Workflow Management
       </div>

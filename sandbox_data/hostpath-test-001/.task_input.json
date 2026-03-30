@@ -1,0 +1,11 @@
+{
+  "system_prompt": "You are a helpful assistant.",
+  "user_message": "Reply with exactly: SANDBOX_WORKS",
+  "llm_base_url": "https://ollama.com/v1",
+  "llm_api_key": "",
+  "llm_model": "gpt-oss:120b",
+  "llm_temperature": 0.1,
+  "llm_max_tokens": 20,
+  "granted_permissions": {},
+  "available_tools": []
+}

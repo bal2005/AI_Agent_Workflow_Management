@@ -1,0 +1,5 @@
+{
+  "success": false,
+  "error": "Client error '401 Unauthorized' for url 'https://ollama.com/v1/chat/completions'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401",
+  "tool_usage": []
+}
