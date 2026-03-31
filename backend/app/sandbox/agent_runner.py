@@ -1,272 +1,633 @@
 """
-Agent Runner — executes inside the sandbox container.
+Agent Runner — executes inside the sandbox container using the Copilot SDK.
 
-This module is the entrypoint for the Docker container. It:
-  1. Reads the task payload from /workspace/.task_input.json
-  2. Loads agent permissions (passed in payload — already validated by host)
-  3. Calls the LLM with the system prompt and user message
-  4. Executes tool calls, checking permissions before each one
-  5. Writes structured output to /workspace/.task_output.json
-  6. Writes a human-readable log to /workspace/run.log
+Flow:
+  1. Read task payload from /workspace/.task_input.json
+  2. Decrypt API key using ENCRYPTION_KEY env var
+  3. Build Copilot SDK Tool objects for each permitted tool
+  4. Create a CopilotClient session with BYOK provider config
+  5. Register on_pre_tool_use hook — enforces granted_permissions at runtime
+  6. Send user message, wait for session.idle event
+  7. Write structured output to /workspace/.task_output.json
+  8. Write human-readable log to /workspace/run.log
 
-When running inside Docker, this file is the CMD entrypoint.
-When running in-process (fallback), run_agent_task() is called directly.
+The SDK handles the tool call / result loop internally.
+Permission enforcement happens in on_pre_tool_use before any tool executes.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import sys
 from pathlib import Path
 from typing import Optional
 
-# ── Logging setup (writes to /workspace/run.log inside container) ─────────────
 
-def _setup_file_logger(workspace: Path):
-    import logging
+# ── API key decryption ────────────────────────────────────────────────────────
+
+def _decrypt_api_key(encrypted_key: str) -> str:
+    """
+    Decrypt the API key using ENCRYPTION_KEY env var (Fernet/AES-128).
+    Falls back to returning the value as-is if decryption fails.
+    The key is passed via container env var — never stored on disk.
+    """
+    if not encrypted_key:
+        return ""
+    enc_key = os.environ.get("ENCRYPTION_KEY", "").strip()
+    if not enc_key:
+        return encrypted_key  # dev mode — assume plaintext
+    try:
+        from cryptography.fernet import Fernet
+        return Fernet(enc_key.encode()).decrypt(encrypted_key.encode()).decode()
+    except Exception:
+        return encrypted_key  # already plaintext or wrong key
+
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+
+def _setup_logger(workspace: Path) -> logging.Logger:
     log_path = workspace / "run.log"
-    handler = logging.FileHandler(log_path)
-    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    file_h = logging.FileHandler(log_path)
+    file_h.setFormatter(fmt)
+    stdout_h = logging.StreamHandler(sys.stdout)
+    stdout_h.setFormatter(fmt)
     root = logging.getLogger()
-    root.addHandler(handler)
-    root.addHandler(logging.StreamHandler(sys.stdout))
-    root.setLevel(logging.DEBUG)
+    root.handlers.clear()
+    root.addHandler(file_h)
+    root.addHandler(stdout_h)
+    root.setLevel(logging.INFO)
     return logging.getLogger("agent_runner")
 
 
-# ── Tool implementations (scoped to /workspace) ───────────────────────────────
+# ── Tool implementations (all scoped to /workspace) ───────────────────────────
 
-def _tool_read_file(workspace: Path, path: str) -> str:
-    target = (workspace / path).resolve()
-    # Security: ensure path stays inside workspace
+def _safe(workspace: Path, rel: str) -> Path:
+    """Resolve path and assert it stays inside workspace."""
+    target = (workspace / rel).resolve()
     if not str(target).startswith(str(workspace.resolve())):
-        return f"Error: path '{path}' is outside the allowed workspace"
-    if not target.exists():
-        return f"Error: file '{path}' does not exist"
-    return target.read_text(encoding="utf-8", errors="replace")
+        raise ValueError(f"Path '{rel}' escapes the workspace")
+    return target
 
 
-def _tool_write_file(workspace: Path, path: str, content: str) -> str:
-    target = (workspace / path).resolve()
-    if not str(target).startswith(str(workspace.resolve())):
-        return f"Error: path '{path}' is outside the allowed workspace"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-    return f"Written {len(content)} chars to '{path}'"
+def _read_file(workspace: Path, path: str) -> str:
+    try:
+        t = _safe(workspace, path)
+        if not t.exists():
+            return f"Error: '{path}' does not exist"
+        return t.read_text(encoding="utf-8", errors="replace")
+    except ValueError as e:
+        return f"Error: {e}"
 
 
-def _tool_list_directory(workspace: Path, path: str = ".") -> str:
-    target = (workspace / path).resolve()
-    if not str(target).startswith(str(workspace.resolve())):
-        return f"Error: path '{path}' is outside the allowed workspace"
-    if not target.is_dir():
-        return f"Error: '{path}' is not a directory"
-    entries = [f"{'DIR ' if e.is_dir() else 'FILE'} {e.name}" for e in sorted(target.iterdir())]
-    return "\n".join(entries) or "(empty)"
+def _write_file(workspace: Path, path: str, content: str) -> str:
+    try:
+        t = _safe(workspace, path)
+        t.parent.mkdir(parents=True, exist_ok=True)
+        t.write_text(content, encoding="utf-8")
+        return f"Written {len(content)} chars to '{path}'"
+    except ValueError as e:
+        return f"Error: {e}"
 
 
-def _tool_shell_exec(command: str) -> str:
-    """Execute a shell command inside the container."""
+def _list_directory(workspace: Path, path: str = ".") -> str:
+    try:
+        t = _safe(workspace, path)
+        if not t.is_dir():
+            return f"Error: '{path}' is not a directory"
+        entries = [f"{'DIR ' if e.is_dir() else 'FILE'} {e.name}" for e in sorted(t.iterdir())]
+        return "\n".join(entries) or "(empty)"
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+def _shell_exec(command: str) -> str:
     import subprocess
     try:
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=30
-        )
-        return result.stdout + (f"\n[stderr] {result.stderr}" if result.stderr else "")
+        r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+        return r.stdout + (f"\n[stderr] {r.stderr}" if r.stderr else "")
     except subprocess.TimeoutExpired:
-        return "Error: command timed out after 30s"
+        return "Error: command timed out"
     except Exception as e:
         return f"Error: {e}"
 
 
-# ── Permission-gated tool dispatcher ─────────────────────────────────────────
+def _web_search(query: str, max_results: int = 8) -> str:
+    """Tavily web search — requires TAVILY_API_KEY env var."""
+    import httpx
+    key = os.environ.get("TAVILY_API_KEY", "").strip()
+    if not key:
+        return "[Search error] TAVILY_API_KEY not set in container environment"
+    try:
+        resp = httpx.post(
+            "https://api.tavily.com/search",
+            json={"api_key": key, "query": query, "max_results": min(max_results, 10),
+                  "search_depth": "basic", "include_answer": True},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        lines = []
+        if data.get("answer"):
+            lines.append(f"Answer: {data['answer']}\n")
+        for i, r in enumerate(data.get("results", []), 1):
+            lines.append(f"{i}. {r.get('title', '')}")
+            lines.append(f"   URL: {r.get('url', '')}")
+            lines.append(f"   {r.get('content', '')[:300]}")
+            lines.append("")
+        return "\n".join(lines).strip() or f"No results for: {query}"
+    except Exception as e:
+        return f"[Search error] {e}"
 
-# Maps tool_name → (tool_key, permission_key, handler_fn)
-_TOOL_REGISTRY = {
-    "read_file":      ("filesystem", "read_files"),
-    "write_file":     ("filesystem", "write_files"),
-    "list_directory": ("filesystem", "read_files"),
-    "shell_exec":     ("shell",      "execute_commands"),
+
+# ── Permission-gated Copilot SDK Tool builder ─────────────────────────────────
+
+# Maps tool name → (tool_key, permission_key)
+# tool_key matches the key in granted_permissions dict
+# permission_key is the specific permission required
+_TOOL_PERMISSION_MAP = {
+    "read_file":          ("filesystem", "read_files"),
+    "write_file":         ("filesystem", "write_files"),
+    "list_directory":     ("filesystem", "read_files"),
+    "shell_exec":         ("shell",      "execute_commands"),
+    "perform_web_search": ("web",        "perform_search"),
 }
 
 
-def dispatch_tool(
-    name: str,
-    args: dict,
+def _build_sdk_tools(
     workspace: Path,
+    available_tools: list[str],
     granted_permissions: dict[str, list[str]],
-    log,
-) -> str:
+    log: logging.Logger,
+) -> list:
     """
-    Execute a tool call after checking permissions.
+    Build Copilot SDK Tool objects for each tool in available_tools.
 
-    granted_permissions: { tool_key: [permission_key, ...] }
-    This dict is built from the DB on the host and passed in the task payload.
-    It is NOT taken from the HTTP request.
+    Each tool's handler:
+      1. Checks granted_permissions before executing
+      2. Calls the actual implementation function
+      3. Returns {"textResultForLlm": result, "resultType": "success"}
+
+    The on_pre_tool_use hook provides a second layer of permission enforcement
+    at the SDK level before the handler is even called.
     """
-    if name not in _TOOL_REGISTRY:
-        return f"Unknown tool: {name}"
+    try:
+        from copilot.tools import Tool
+    except ImportError:
+        log.error("github-copilot-sdk not installed in container image")
+        return []
 
-    tool_key, permission_key = _TOOL_REGISTRY[name]
-    allowed = permission_key in granted_permissions.get(tool_key, [])
+    # Tool schemas — what the LLM sees
+    _schemas: dict[str, dict] = {
+        "read_file": {
+            "description": "Read the full content of a file from /workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Relative path to the file"}},
+                "required": ["path"],
+            },
+        },
+        "write_file": {
+            "description": "Create or overwrite a file in /workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path":    {"type": "string", "description": "Relative path to write"},
+                    "content": {"type": "string", "description": "Full file content"},
+                },
+                "required": ["path", "content"],
+            },
+        },
+        "list_directory": {
+            "description": "List files and folders in a directory. Use '.' for workspace root.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Relative path (default '.')"}},
+                "required": [],
+            },
+        },
+        "shell_exec": {
+            "description": "Execute a shell command inside the sandbox container.",
+            "parameters": {
+                "type": "object",
+                "properties": {"command": {"type": "string", "description": "Shell command to run"}},
+                "required": ["command"],
+            },
+        },
+        "perform_web_search": {
+            "description": "Search the web using Tavily. Returns titles, URLs, snippets, and a direct answer.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query":       {"type": "string",  "description": "Search query"},
+                    "max_results": {"type": "integer", "description": "Max results (default 8)"},
+                },
+                "required": ["query"],
+            },
+        },
+    }
 
-    if not allowed:
-        msg = f"PERMISSION DENIED: agent does not have '{permission_key}' on '{tool_key}'"
-        log.warning(msg)
-        return msg  # safe error — does not raise, lets LLM continue
+    tools = []
 
-    log.info(f"Tool call: {name}({args})")
+    for tool_name in available_tools:
+        if tool_name not in _schemas:
+            log.warning(f"Unknown tool requested: {tool_name} — skipping")
+            continue
 
-    if name == "read_file":
-        return _tool_read_file(workspace, args.get("path", ""))
-    elif name == "write_file":
-        return _tool_write_file(workspace, args.get("path", ""), args.get("content", ""))
-    elif name == "list_directory":
-        return _tool_list_directory(workspace, args.get("path", "."))
-    elif name == "shell_exec":
-        return _tool_shell_exec(args.get("command", ""))
-    return f"Tool '{name}' has no handler"
+        schema = _schemas[tool_name]
+        tool_key, permission_key = _TOOL_PERMISSION_MAP.get(tool_name, ("", ""))
+
+        # Capture loop variables for the closure
+        _name = tool_name
+        _tkey = tool_key
+        _pkey = permission_key
+
+        def _make_handler(name, tkey, pkey):
+            async def handler(invocation: dict) -> dict:
+                args = invocation.get("arguments", {})
+                if pkey and tkey:
+                    if pkey not in granted_permissions.get(tkey, []):
+                        msg = f"PERMISSION DENIED: '{pkey}' not granted on '{tkey}'"
+                        log.warning(f"[{name}] {msg}")
+                        return {"textResultForLlm": msg, "resultType": "error"}
+                log.info(f"Executing tool: {name}({args})")
+                if name == "read_file":
+                    result = _read_file(workspace, args.get("path", ""))
+                elif name == "write_file":
+                    result = _write_file(workspace, args.get("path", ""), args.get("content", ""))
+                elif name == "list_directory":
+                    result = _list_directory(workspace, args.get("path", "."))
+                elif name == "shell_exec":
+                    result = _shell_exec(args.get("command", ""))
+                elif name == "perform_web_search":
+                    result = _web_search(args.get("query", ""), args.get("max_results", 8))
+                else:
+                    result = f"No handler for tool: {name}"
+                log.info(f"Tool result [{name}]: {result[:120]}{'...' if len(result) > 120 else ''}")
+                return {"textResultForLlm": result, "resultType": "success"}
+            return handler
+
+        tools.append(Tool(
+            name=tool_name,
+            description=schema["description"],
+            parameters=schema["parameters"],
+            handler=_make_handler(_name, _tkey, _pkey),
+        ))
+        log.info(f"Registered SDK tool: {tool_name} (requires {permission_key} on {tool_key})")
+
+    return tools
 
 
-# ── LLM call (direct httpx — no SDK inside container) ────────────────────────
+# ── Copilot SDK provider config builder ───────────────────────────────────────
 
-def call_llm(
+def _build_provider(base_url: str, api_key: str, provider_hint: str = "openai") -> dict:
+    """Build the Copilot SDK provider dict from BYOK config."""
+    provider_type = "openai"
+    if provider_hint == "claude":
+        provider_type = "anthropic"
+    elif provider_hint == "azure":
+        provider_type = "azure"
+
+    p: dict = {"type": provider_type}
+    url = base_url.rstrip("/") if base_url else ""
+    if url:
+        p["base_url"] = url
+    if api_key:
+        p["api_key"] = api_key
+    return p
+
+
+# ── Main async agent loop using Copilot SDK ───────────────────────────────────
+
+async def _run_with_sdk(
+    system_prompt: str,
+    user_message: str,
     base_url: str,
     api_key: str,
     model: str,
-    messages: list[dict],
-    tools: list[dict],
     temperature: Optional[float],
-    max_tokens: Optional[int],
-) -> dict:
-    """Call the LLM API and return the raw response dict."""
-    import httpx
+    max_tokens: Optional[float],
+    sdk_tools: list,
+    granted_permissions: dict,
+    log: logging.Logger,
+) -> tuple[str, list[str]]:
+    """
+    Run the agent using the Copilot SDK with BYOK provider.
+    Supports SDK 0.1.x (positional dict) and 0.2.x (keyword-only args).
 
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    ── PLACEHOLDER ──────────────────────────────────────────────────────────────
+    This function is kept as a placeholder for when a native GitHub Copilot
+    API key is available. The SDK's custom Tool objects with handlers work
+    correctly with GitHub Copilot's own model endpoints.
 
-    body: dict = {"model": model, "messages": messages}
-    if tools:
-        body["tools"] = tools
-        body["tool_choice"] = "auto"
+    Currently NOT called for BYOK providers — run_agent_task() routes those
+    to _run_direct_httpx() instead, which correctly sends tool schemas to
+    the external model as standard OpenAI function definitions.
+
+    To activate: set a native GitHub Copilot API key and update the BYOK
+    detection logic in run_agent_task().
+    ─────────────────────────────────────────────────────────────────────────────
+    Returns (final_text, tool_usage_log).
+    """
+    from copilot import CopilotClient, PermissionHandler
+    import inspect
+
+    tool_usage_log: list[str] = []
+    final_text = ""
+    done_event = asyncio.Event()
+
+    async def on_pre_tool_use(input_data, invocation):
+        if not isinstance(input_data, dict):
+            return {"permissionDecision": "allow"}
+        tool_name = input_data.get("toolName", "")
+        tool_key, permission_key = _TOOL_PERMISSION_MAP.get(tool_name, ("", ""))
+        if tool_key and permission_key:
+            if permission_key not in granted_permissions.get(tool_key, []):
+                msg = f"⛔ DENIED: {tool_name} (needs '{permission_key}' on '{tool_key}')"
+                log.warning(msg)
+                tool_usage_log.append(msg)
+                return {"permissionDecision": "deny"}
+        tool_usage_log.append(f"✅ allowed: {tool_name}")
+        return {"permissionDecision": "allow", "modifiedArgs": input_data.get("toolArgs")}
+
+    async def on_post_tool_use(input_data, invocation):
+        if isinstance(input_data, dict):
+            tool_usage_log.append(f"🔧 {input_data.get('toolName', '?')}() completed")
+        return {}
+
+    async def on_error_occurred(input_data, invocation):
+        if isinstance(input_data, dict):
+            err = input_data.get("error", "")
+            ctx = input_data.get("errorContext", "")
+            log.warning(f"SDK error in {ctx}: {err}")
+            tool_usage_log.append(f"⚠ error skipped: {str(err)[:120]}")
+        return {"errorHandling": "skip"}
+
+    def on_event(event):
+        nonlocal final_text
+        event_type = event.type.value if hasattr(event.type, "value") else str(event.type)
+        if event_type == "assistant.message":
+            final_text = getattr(event.data, "content", "") or ""
+            log.info(f"Assistant message received ({len(final_text)} chars)")
+        elif event_type == "session.idle":
+            log.info("Session idle — workflow complete")
+            done_event.set()
+
+    extra_body: dict = {}
     if temperature is not None:
-        body["temperature"] = temperature
+        extra_body["temperature"] = temperature
     if max_tokens is not None:
-        body["max_tokens"] = max_tokens
+        extra_body["max_tokens"] = int(max_tokens)
 
-    resp = httpx.post(f"{base_url}/chat/completions", headers=headers, json=body, timeout=120)
-    resp.raise_for_status()
-    return resp.json()
+    provider = _build_provider(base_url, api_key)
+    hooks = {
+        "on_pre_tool_use":   on_pre_tool_use,
+        "on_post_tool_use":  on_post_tool_use,
+        "on_error_occurred": on_error_occurred,
+    }
+
+    # Detect SDK version: 0.2.x uses keyword-only args; 0.1.x uses positional dict
+    sig = inspect.signature(CopilotClient.create_session)
+    param_names = list(sig.parameters.keys())
+    is_v2 = len(param_names) > 1 and param_names[1] == "on_permission_request"
+    log.info(f"SDK API: {'v0.2.x keyword-only' if is_v2 else 'v0.1.x positional dict'}")
+
+    client = CopilotClient()
+    session = None
+
+    try:
+        log.info(f"Starting session | model={model} tools={[t.name for t in sdk_tools]}")
+        await client.start()
+
+        if is_v2:
+            # SDK 0.2.x — keyword-only, on_event is a create_session param
+            # Do NOT pass available_tools=[] — it acts as a whitelist and
+            # overrides custom tools, preventing them from being sent to the model.
+            # Custom Tool objects in `tools=` are sufficient.
+            session = await client.create_session(
+                on_permission_request=PermissionHandler.approve_all,
+                model=model,
+                system_message={"mode": "replace", "content": system_prompt},
+                tools=sdk_tools,
+                provider=provider,
+                infinite_sessions={"enabled": False},
+                hooks=hooks,
+                on_event=on_event,
+            )
+            await session.send(user_message)
+        else:
+            # SDK 0.1.x — positional session_config dict, session.on() for events
+            session_config: dict = {
+                "model": model,
+                "system_message": {"mode": "replace", "content": system_prompt},
+                "on_permission_request": PermissionHandler.approve_all,
+                "provider": provider,
+                "tools": sdk_tools,
+                "available_tools": [],
+                "infinite_sessions": {"enabled": False},
+                "hooks": hooks,
+            }
+            if extra_body:
+                session_config["extra_body"] = extra_body
+            session = await client.create_session(session_config)
+            session.on(on_event)
+            await session.send(user_message)
+
+        try:
+            await asyncio.wait_for(done_event.wait(), timeout=180.0)
+        except asyncio.TimeoutError:
+            log.warning("Session timed out after 180s")
+            final_text = final_text or "[Timeout: no response within 180s]"
+
+    finally:
+        if session:
+            try:
+                await session.disconnect()
+            except Exception:
+                pass
+        try:
+            await client.stop()
+        except Exception:
+            pass
+
+    return final_text or "[No response]", tool_usage_log
 
 
-# ── Main agent loop ───────────────────────────────────────────────────────────
+# ── Main entry point ──────────────────────────────────────────────────────────
 
 def run_agent_task(payload: dict, workspace: Path) -> dict:
     """
     Execute one task inside the sandbox.
 
-    payload keys:
-      system_prompt       — agent's instructions
-      user_message        — task description + prior context
-      llm_base_url        — e.g. https://api.openai.com/v1
-      llm_api_key         — decrypted on host before passing
-      llm_model           — e.g. gpt-4o
-      llm_temperature     — optional float
-      llm_max_tokens      — optional int
-      granted_permissions — { tool_key: [permission_key, ...] }
-      available_tools     — list of tool names the agent may attempt
+    Uses the Copilot SDK for session management when possible.
+    For BYOK providers (non-GitHub Copilot), falls back to direct httpx
+    agentic loop which correctly forwards tool schemas to the external model.
+    The SDK's custom Tool objects with handlers are designed for the Copilot
+    service's native execution — they don't get forwarded to BYOK providers.
     """
-    log = _setup_file_logger(workspace)
+    log = _setup_logger(workspace)
     log.info(f"Agent runner started | workspace={workspace}")
 
     system_prompt       = payload.get("system_prompt", "")
     user_message        = payload.get("user_message", "")
     base_url            = payload.get("llm_base_url", "https://api.openai.com/v1").rstrip("/")
-    api_key             = payload.get("llm_api_key", "")
     model               = payload.get("llm_model", "gpt-4o")
     temperature         = payload.get("llm_temperature")
     max_tokens          = payload.get("llm_max_tokens")
+    provider_hint       = payload.get("llm_provider", "openai")
     granted_permissions = payload.get("granted_permissions", {})
     available_tools     = payload.get("available_tools", [])
 
-    log.info(f"Agent config | model={model} tools={available_tools} permissions={granted_permissions}")
+    api_key = _decrypt_api_key(
+        payload.get("llm_api_key_enc", "") or payload.get("llm_api_key", "")
+    )
 
-    # Build OpenAI-format tool definitions for tools the agent may attempt
-    tool_defs = _build_tool_definitions(available_tools)
+    log.info(f"Config | model={model} provider={provider_hint} tools={available_tools}")
+    log.info(f"Permissions | {granted_permissions}")
 
+    # BYOK providers (anything with a custom base_url) need direct httpx —
+    # the Copilot SDK does not forward custom Tool schemas to external models.
+    # The SDK is only effective when using GitHub Copilot's own model endpoints.
+    is_byok = bool(base_url and "copilot" not in base_url.lower() and "github" not in base_url.lower())
+
+    if is_byok:
+        log.info(f"BYOK provider detected ({base_url}) — using direct httpx agentic loop")
+        return _run_direct_httpx(
+            system_prompt, user_message, base_url, api_key, model,
+            temperature, max_tokens, available_tools, granted_permissions,
+            workspace, log,
+        )
+
+    # GitHub Copilot native endpoint — use the SDK with custom Tool objects
+    sdk_tools = _build_sdk_tools(workspace, available_tools, granted_permissions, log)
+    log.info(f"Built {len(sdk_tools)} SDK tool(s)")
+
+    try:
+        final_text, tool_usage_log = asyncio.run(_run_with_sdk(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            sdk_tools=sdk_tools,
+            granted_permissions=granted_permissions,
+            log=log,
+        ))
+        log.info(f"Agent finished | output_chars={len(final_text)}")
+        return {"success": True, "final_text": final_text, "tool_usage": tool_usage_log}
+    except ImportError as e:
+        log.error(f"Copilot SDK not available: {e} — falling back to direct httpx")
+        return _run_direct_httpx(
+            system_prompt, user_message, base_url, api_key, model,
+            temperature, max_tokens, available_tools, granted_permissions,
+            workspace, log,
+        )
+    except Exception as e:
+        log.error(f"SDK run failed: {e}")
+        return {"success": False, "error": str(e), "tool_usage": []}
+
+
+# ── Direct httpx fallback (when SDK unavailable) ──────────────────────────────
+
+def _run_direct_httpx(
+    system_prompt, user_message, base_url, api_key, model,
+    temperature, max_tokens, available_tools, granted_permissions,
+    workspace, log,
+) -> dict:
+    """Fallback agent loop using direct httpx — no SDK dependency."""
+    import httpx
+
+    tool_defs = _build_openai_tool_defs(available_tools)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user",   "content": user_message},
     ]
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     tool_usage_log: list[str] = []
     final_text = ""
-    max_iterations = 10
 
-    for iteration in range(max_iterations):
-        log.info(f"LLM iteration {iteration + 1}")
+    for iteration in range(10):
+        body: dict = {"model": model, "messages": messages}
+        if tool_defs:
+            body["tools"] = tool_defs
+            body["tool_choice"] = "auto"
+        if temperature is not None:
+            body["temperature"] = temperature
+        if max_tokens is not None:
+            body["max_tokens"] = int(max_tokens)
+
         try:
-            response = call_llm(base_url, api_key, model, messages, tool_defs, temperature, max_tokens)
+            resp = httpx.post(f"{base_url}/chat/completions", headers=headers, json=body, timeout=120)
+            resp.raise_for_status()
         except Exception as e:
             log.error(f"LLM call failed: {e}")
             return {"success": False, "error": str(e), "tool_usage": tool_usage_log}
 
-        choice = response["choices"][0]
-        msg    = choice["message"]
+        msg = resp.json()["choices"][0]["message"]
         messages.append(msg)
-
         tool_calls = msg.get("tool_calls") or []
+
         if not tool_calls:
             final_text = msg.get("content") or "[No response]"
-            log.info(f"Agent finished | output_chars={len(final_text)}")
             break
 
-        # Execute each tool call
         for tc in tool_calls:
-            fn_name  = tc["function"]["name"]
-            raw_args = tc["function"].get("arguments", "{}")
+            name = tc["function"]["name"]
             try:
-                fn_args = json.loads(raw_args)
-            except json.JSONDecodeError:
-                fn_args = {}
+                args = json.loads(tc["function"].get("arguments", "{}"))
+            except Exception:
+                args = {}
 
-            result = dispatch_tool(fn_name, fn_args, workspace, granted_permissions, log)
-            tool_usage_log.append(f"🔧 {fn_name}() → {result[:120]}")
+            # Permission check
+            tkey, pkey = _TOOL_PERMISSION_MAP.get(name, ("", ""))
+            if tkey and pkey and pkey not in granted_permissions.get(tkey, []):
+                result = f"PERMISSION DENIED: '{pkey}' not granted on '{tkey}'"
+                tool_usage_log.append(f"⛔ {name}() — {result}")
+            else:
+                result = _dispatch(name, args, workspace)
+                tool_usage_log.append(f"🔧 {name}() → {result[:120]}")
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": result,
-            })
-    else:
-        final_text = msg.get("content") or "[Max iterations reached]"
+            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
 
-    return {
-        "success": True,
-        "final_text": final_text,
-        "tool_usage": tool_usage_log,
-    }
+    return {"success": True, "final_text": final_text, "tool_usage": tool_usage_log}
 
 
-def _build_tool_definitions(tool_names: list[str]) -> list[dict]:
-    """Build minimal OpenAI tool definitions for the requested tools."""
+def _dispatch(name: str, args: dict, workspace: Path) -> str:
+    if name == "read_file":
+        return _read_file(workspace, args.get("path", ""))
+    elif name == "write_file":
+        return _write_file(workspace, args.get("path", ""), args.get("content", ""))
+    elif name == "list_directory":
+        return _list_directory(workspace, args.get("path", "."))
+    elif name == "shell_exec":
+        return _shell_exec(args.get("command", ""))
+    elif name == "perform_web_search":
+        return _web_search(args.get("query", ""), args.get("max_results", 8))
+    return f"Unknown tool: {name}"
+
+
+def _build_openai_tool_defs(tool_names: list[str]) -> list[dict]:
     defs = {
-        "read_file":      {"description": "Read a file from /workspace", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
-        "write_file":     {"description": "Write a file to /workspace",  "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
-        "list_directory": {"description": "List files in a directory",   "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": []}},
-        "shell_exec":     {"description": "Run a shell command",         "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+        "read_file":          {"description": "Read a file",          "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+        "write_file":         {"description": "Write a file",         "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+        "list_directory":     {"description": "List directory",       "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": []}},
+        "shell_exec":         {"description": "Run shell command",    "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+        "perform_web_search": {"description": "Search the web",       "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}}, "required": ["query"]}},
     }
-    return [
-        {"type": "function", "function": {"name": name, **defs[name]}}
-        for name in tool_names if name in defs
-    ]
+    return [{"type": "function", "function": {"name": n, **defs[n]}} for n in tool_names if n in defs]
 
 
 # ── Container entrypoint ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    workspace = Path("/workspace")
+    workspace   = Path("/workspace")
     input_file  = workspace / ".task_input.json"
     output_file = workspace / ".task_output.json"
 

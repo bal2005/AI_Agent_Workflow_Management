@@ -91,46 +91,71 @@ class SandboxManager:
         cpus: float = 1.0,
         timeout_seconds: int = 300,
     ) -> dict:
-        """
-        Execute the agent runner inside a Docker container.
-
-        Steps:
-          1. Prepare workspace directory
-          2. Write task payload to .task_input.json
-          3. docker run with workspace mounted as /workspace
-          4. Wait for container to finish (timeout enforced)
-          5. Read output from .task_output.json
-          6. Container auto-removed by --rm flag
-
-        Returns the structured output dict from the agent runner.
-        """
         self.prepare_workspace()
         self.write_task_input(task_payload)
 
-        # Build the host-side path for the volume mount.
-        # Docker daemon runs on the host, so -v needs the host path.
+        # ── Determine the workspace mount path ────────────────────────────────
+        # The task's folder_path is where the agent should read/write files.
+        # We mount it as /workspace so the agent operates on the real task folder.
+        # The run-specific dir (SANDBOX_BASE/run_id) holds only control files
+        # (.task_input.json, .task_output.json, run.log) — mounted as /run_workspace.
+        #
+        # If no folder_path is set, fall back to the run-specific dir for both.
+
+        task_folder = task_payload.get("task_folder_path", "").strip()
+
+        # Build host-side paths for volume mounts
         if HOST_SANDBOX_BASE:
-            host_workspace = HOST_SANDBOX_BASE.rstrip("/") + "/" + self.run_id
+            host_run_dir = HOST_SANDBOX_BASE.rstrip("/") + "/" + self.run_id
         else:
-            # Fallback: assume SANDBOX_BASE is already a host path (non-Docker dev)
-            host_workspace = str(self.workspace)
+            host_run_dir = str(self.workspace)
+
+        # Resolve the task folder to a host path
+        # Inside the backend container, /workspace maps to sandbox_data on the host
+        # and /sandbox_host also maps to sandbox_data — so strip the container prefix
+        if task_folder:
+            # task_folder is a path inside the backend container (e.g. /workspace/test_run_001)
+            # Map it to the host path by replacing the container mount point
+            if task_folder.startswith("/workspace/"):
+                rel = task_folder[len("/workspace/"):]
+                if HOST_SANDBOX_BASE:
+                    host_task_folder = HOST_SANDBOX_BASE.rstrip("/") + "/" + rel
+                else:
+                    host_task_folder = str(SANDBOX_BASE / rel)
+            elif task_folder.startswith("/sandbox_host/"):
+                rel = task_folder[len("/sandbox_host/"):]
+                if HOST_SANDBOX_BASE:
+                    host_task_folder = HOST_SANDBOX_BASE.rstrip("/") + "/" + rel
+                else:
+                    host_task_folder = str(SANDBOX_BASE / rel)
+            else:
+                # Absolute path on host or unknown — use as-is
+                host_task_folder = task_folder
+        else:
+            host_task_folder = host_run_dir
 
         log.info("Starting sandbox container", extra={
-            "run_id": self.run_id,
-            "image": AGENT_IMAGE,
-            "host_workspace": host_workspace,
-            "network": "bridge" if network_access else "none",
+            "run_id":           self.run_id,
+            "image":            AGENT_IMAGE,
+            "host_task_folder": host_task_folder,
+            "host_run_dir":     host_run_dir,
+            "network":          "bridge" if network_access else "none",
         })
 
         cmd = [
             "docker", "run",
             "--rm",
             "--name", f"agent-run-{self.run_id[:12]}",
-            "-v", f"{host_workspace}:/workspace",   # host path → container /workspace
+            # Mount task folder as /workspace — agent reads/writes files here
+            "-v", f"{host_task_folder}:/workspace",
+            # Mount run-specific dir as /run_workspace — control files go here
+            "-v", f"{host_run_dir}:/run_workspace",
             "--network", "bridge" if network_access else "none",
             "--memory", f"{memory_mb}m",
             "--cpus", str(cpus),
             "--env", f"RUN_ID={self.run_id}",
+            "--env", f"ENCRYPTION_KEY={os.environ.get('ENCRYPTION_KEY', '')}",
+            "--env", f"TAVILY_API_KEY={os.environ.get('TAVILY_API_KEY', '')}",
             "--user", "root",
             AGENT_IMAGE,
         ]

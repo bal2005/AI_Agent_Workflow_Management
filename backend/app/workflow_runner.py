@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 from app import models
-from app.crypto import decrypt
+from app.crypto import decrypt, encrypt
 from app.prompt_utils import compose_agent_prompt
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 _FS_READ_TOOLS  = {"list_directory", "read_file"}
 _FS_WRITE_TOOLS = {"write_file", "edit_file", "append_to_file"}
+_WEB_TOOLS      = {"perform_web_search", "search_news", "extract_page_content"}
 
 # Built-in CLI tools we never want the model to call via BYOK
 _BLOCKED_BUILTIN_TOOLS = {
@@ -34,14 +35,35 @@ _BLOCKED_BUILTIN_TOOLS = {
 }
 
 
-def _allowed_tool_names(task: models.Task) -> set[str]:
+def _encrypt_for_sandbox(api_key: str) -> str:
+    """
+    Re-encrypt the already-decrypted API key for safe storage in the
+    workspace JSON file. The sandbox container decrypts it using the
+    ENCRYPTION_KEY env var — the plaintext never touches the filesystem.
+    Returns empty string if no key provided.
+    """
+    if not api_key:
+        return ""
+    return encrypt(api_key)
+
+
+def _allowed_tool_names(task: models.Task, db=None) -> set[str]:
     """Return the set of tool names this task is allowed to call."""
     mode = task.tool_usage_mode or "none"
-    if mode == "none":
-        return set()
-    allowed = set(_FS_READ_TOOLS)
-    if mode == "allowed":
-        allowed |= _FS_WRITE_TOOLS
+    allowed: set[str] = set()
+
+    if mode != "none":
+        allowed |= _FS_READ_TOOLS
+        if mode == "allowed":
+            allowed |= _FS_WRITE_TOOLS
+
+    # Add web tools if the agent has perform_search permission in DB
+    if db and task.agent_id:
+        from app.sandbox.permissions import PermissionChecker
+        checker = PermissionChecker.from_db(db, task.agent_id)
+        if checker.allowed("web", "perform_search"):
+            allowed |= _WEB_TOOLS
+
     return allowed
 
 
@@ -171,6 +193,42 @@ def _build_sdk_tools(task: models.Task) -> list:
             handler=handle_append_to_file,
         ))
 
+    # ── Web search tools (SDK placeholder — active when Copilot native key used) ──
+    # Check if agent has web search permission
+    if task.agent_id:
+        try:
+            from app.sandbox.permissions import PermissionChecker
+            # Note: _build_sdk_tools is called without db in some paths,
+            # so we check the task's agent tool_access relationship directly
+            for access in (task.agent.tool_access if task.agent else []):
+                if hasattr(access, 'tool') and access.tool and access.tool.key == "web":
+                    if "perform_search" in (access.granted_permissions or []):
+                        async def handle_web_search(inv):
+                            args = inv.get("arguments", {})
+                            from app.web_tools import perform_web_search
+                            result = perform_web_search(
+                                args.get("query", ""),
+                                args.get("max_results", 8),
+                            )
+                            return {"textResultForLlm": result, "resultType": "success"}
+
+                        tools.append(Tool(
+                            name="perform_web_search",
+                            description="Search the web using Tavily. Returns titles, URLs, snippets, and a direct answer.",
+                            parameters={
+                                "type": "object",
+                                "properties": {
+                                    "query":       {"type": "string",  "description": "Search query"},
+                                    "max_results": {"type": "integer", "description": "Max results (default 8)"},
+                                },
+                                "required": ["query"],
+                            },
+                            handler=handle_web_search,
+                        ))
+                        break
+        except Exception:
+            pass  # permissions not loadable — skip web tools
+
     return tools
 
 
@@ -260,7 +318,20 @@ async def execute_task_with_copilot(
 ) -> dict:
     """
     Execute one task using a fresh Copilot SDK session.
-    Returns a structured result dict.
+
+    ── PLACEHOLDER ──────────────────────────────────────────────────────────────
+    This function is kept as a placeholder for when a native GitHub Copilot
+    API key is available. The SDK's custom Tool objects with handlers work
+    correctly with GitHub Copilot's own model endpoints.
+
+    Currently NOT called for BYOK providers (OpenAI, Ollama, Claude, etc.)
+    because the SDK does not forward custom tool schemas to external models.
+    run_task_in_workflow() routes BYOK providers to _execute_task_fallback()
+    (direct httpx) instead.
+
+    To activate: remove the BYOK check in run_task_in_workflow() and set a
+    native GitHub Copilot API key in LLM Config.
+    ─────────────────────────────────────────────────────────────────────────────
     """
     try:
         from copilot import CopilotClient, PermissionHandler
@@ -387,6 +458,7 @@ async def _execute_task_fallback(
     cfg: SimpleNamespace,
     system_prompt: str,
     user_message: str,
+    db=None,
 ) -> dict:
     from app.routers.task_playground import _build_fs_tools, _run_agent_loop
 
@@ -394,7 +466,6 @@ async def _execute_task_fallback(
     root_path = None
 
     if task.folder_path:
-        # Always resolve to absolute — prevents ".." escape from relative roots
         root_path = Path(task.folder_path).resolve()
         if root_path.exists() and root_path.is_dir() and task.tool_usage_mode != "none":
             perms = ["read_files", "browse_folders"]
@@ -404,12 +475,21 @@ async def _execute_task_fallback(
         else:
             root_path = None
 
-    # Never use Path(".") as root — it allows ".." to escape to parent dirs
     if root_path is None:
         import tempfile
         root_path = Path(tempfile.gettempdir()).resolve()
 
-    # Patch base_url: rewrite localhost → host.docker.internal for Docker
+    # Add web tools if agent has permission
+    if db and task.agent_id:
+        from app.sandbox.permissions import PermissionChecker
+        from app.web_tools import build_web_tools
+        checker = PermissionChecker.from_db(db, task.agent_id)
+        if checker.allowed("web", "perform_search"):
+            web_perms = {"perform_search": True}
+            if checker.allowed("web", "open_result_links"):
+                web_perms["open_result_links"] = True
+            tools += build_web_tools(web_perms)
+
     patched_cfg = SimpleNamespace(
         base_url=(cfg.base_url or "").replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal").rstrip("/") or "https://api.openai.com/v1",
         api_key=cfg.api_key,
@@ -455,17 +535,55 @@ def run_task_in_workflow(
     if task.llm_system_behavior:
         agent_prompt = (agent_prompt + "\n\n" + task.llm_system_behavior).strip()
 
-    # Add tool context hint to system prompt so model knows what's available
-    allowed = _allowed_tool_names(task)
+    # Add tool context hint — includes web search if agent has permission
+    allowed = _allowed_tool_names(task, db)
     if allowed:
-        tool_hint = f"\nAvailable tools: {', '.join(sorted(allowed))}. Use only these — do not attempt shell, container, or system-level operations."
+        tool_hint = (
+            f"\n\nYou have access to these tools: {', '.join(sorted(allowed))}."
+            f"\nIMPORTANT: When the task asks you to create, write, or save a file, "
+            f"you MUST call the write_file tool — do not just describe the file contents in text."
+            f"\nWhen the task requires current information from the internet, use perform_web_search."
+            f"\nDo not attempt shell, container, or system-level operations."
+        )
         agent_prompt = agent_prompt + tool_hint
 
     system_prompt, _ = compose_agent_prompt(domain_prompt, agent_prompt)
     user_message = _build_user_message(task, prior_output)
-    sdk_tools = _build_sdk_tools(task)
 
-    print(f"[WorkflowRunner] task={task.name} model={cfg.model_name} tools={[t.name for t in sdk_tools]} prior={'yes' if prior_output else 'no'}", flush=True)
+    print(f"[WorkflowRunner] task={task.name} model={cfg.model_name} provider={cfg.provider} prior={'yes' if prior_output else 'no'}", flush=True)
+
+    # ── Routing: BYOK vs GitHub Copilot native ────────────────────────────────
+    # The Copilot SDK's custom Tool objects with handlers are designed for
+    # GitHub Copilot's own service. For BYOK providers (OpenAI, Ollama, Claude,
+    # custom endpoints), the SDK does NOT forward tool schemas to the external
+    # model — so tool calls never happen.
+    #
+    # PLACEHOLDER: When a native GitHub Copilot API key is available, remove
+    # the BYOK check below and let all providers use execute_task_with_copilot().
+    # The SDK path (execute_task_with_copilot) is kept intact as a placeholder
+    # for that future use case.
+    #
+    # For now: BYOK providers go straight to _execute_task_fallback (direct httpx).
+    # ─────────────────────────────────────────────────────────────────────────────
+    base_url_lower = (cfg.base_url or "").lower()
+    is_byok = bool(cfg.base_url and
+                   "copilot" not in base_url_lower and
+                   "github" not in base_url_lower)
+
+    if is_byok:
+        print(f"[WorkflowRunner] BYOK provider ({cfg.provider}) → direct httpx (SDK placeholder active)", flush=True)
+        try:
+            return asyncio.run(_execute_task_fallback(task, cfg, system_prompt, user_message, db=db))
+        except Exception as e:
+            return {
+                "success": False, "final_text": str(e), "structured_output": {},
+                "tool_usage": [], "logs": [f"Error: {e}"],
+                "metadata": {"task_id": task.id, "task_name": task.name}, "error": str(e),
+            }
+
+    # ── GitHub Copilot native path (SDK with Tool handlers) ───────────────────
+    sdk_tools = _build_sdk_tools(task)
+    print(f"[WorkflowRunner] Copilot native → SDK tools={[t.name for t in sdk_tools]}", flush=True)
 
     try:
         result = asyncio.run(execute_task_with_copilot(
@@ -482,7 +600,7 @@ def run_task_in_workflow(
         logger.warning(f"[WorkflowRunner] SDK failed for task={task.name}: {e} — falling back to httpx")
         print(f"[WorkflowRunner] ⚠ SDK error: {e} — using fallback", flush=True)
         try:
-            return asyncio.run(_execute_task_fallback(task, cfg, system_prompt, user_message))
+            return asyncio.run(_execute_task_fallback(task, cfg, system_prompt, user_message, db=db))
         except Exception as fe:
             return {
                 "success": False,
@@ -537,19 +655,38 @@ def run_task_in_sandbox(
     # Build granted_permissions dict for the agent runner
     granted_permissions = {k: list(v) for k, v in checker.grants.items()}
 
-    # Determine which tools the agent may attempt (based on task config)
+    # Determine which tools the agent may attempt (based on task config + permissions)
     available_tools: list[str] = []
     if task.tool_usage_mode != "none":
         available_tools = ["list_directory", "read_file"]
         if task.tool_usage_mode == "allowed":
             available_tools += ["write_file"]
 
+    # Add web search if agent has perform_search permission
+    if checker.allowed("web", "perform_search"):
+        available_tools.append("perform_web_search")
+
+    # Resolve the workspace folder for this run.
+    # If the task has a folder_path configured, use it.
+    # Otherwise auto-create a dedicated folder under /workspace (sandbox_data)
+    # named after the task so output is always persisted and easy to find.
+    import re
+    if task.folder_path:
+        effective_folder = task.folder_path
+    else:
+        # Sanitise task name for use as a directory name
+        safe_name = re.sub(r"[^\w\-]", "_", task.name.lower()).strip("_")[:40]
+        auto_folder = Path("/workspace") / f"{safe_name}_run_{run_id}"
+        auto_folder.mkdir(parents=True, exist_ok=True)
+        effective_folder = str(auto_folder)
+
     task_payload = {
         "system_prompt":       system_prompt,
         "user_message":        user_message,
         "llm_base_url":        (cfg.base_url or "https://api.openai.com/v1").rstrip("/"),
-        "llm_api_key":         cfg.api_key,
+        "llm_api_key_enc":     _encrypt_for_sandbox(cfg.api_key),
         "llm_model":           cfg.model_name or "gpt-4o",
+        "llm_provider":        cfg.provider,
         "llm_temperature":     cfg.temperature,
         "llm_max_tokens":      cfg.max_tokens,
         "granted_permissions": granted_permissions,
@@ -557,6 +694,8 @@ def run_task_in_sandbox(
         "task_id":             task.id,
         "task_name":           task.name,
         "run_id":              run_id,
+        # Resolved workspace folder — container mounts this as /workspace
+        "task_folder_path":    effective_folder,
     }
 
     # Need network if LLM is a remote endpoint (not localhost)

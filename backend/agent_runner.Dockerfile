@@ -8,7 +8,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Only install what the agent runner needs
-RUN pip install --no-cache-dir httpx
+RUN pip install --no-cache-dir httpx cryptography github-copilot-sdk tavily-python
 
 # Copy only the agent runner module
 COPY app/sandbox/agent_runner.py /app/agent_runner.py

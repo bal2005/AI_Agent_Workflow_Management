@@ -1,101 +1,130 @@
+"""MCP tool for reading a file and returning a structured summary.
+
+This module defines a Pydantic model for the summary output and an async
+function that can be registered with a :class:`~mcp.server.fastmcp.FastMCP`
+instance using the ``@mcp.tool()`` decorator.
+
+The tool:
+
+1. Accepts a file path (string).
+2. Reads the file content (text mode, UTF‑8).
+3. Returns a summary containing the path, line count, word count, a short
+   preview of the content, and an optional error message if something went
+   wrong.
+
+Error handling is performed for common I/O problems such as the file not
+existing, lacking permissions, or being unreadable.  The function never
+raises – it always returns a ``FileSummary`` instance, making it safe to be
+used directly by an LLM‑driven agent.
+"""
+
+from __future__ import annotations
+
+import os
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from mcp.server.fastmcp import FastMCP
+# The MCP server instance is created only when the module is executed as a
+# script.  Importers can also import ``summarize_file`` and register it with an
+# existing FastMCP instance.
 
-# Initialize the MCP server instance. This can be imported and the tool
-# registered in a larger application, or the module can be run directly.
-#mcp = FastMCP("File Summary Server")
 
 class FileSummary(BaseModel):
     """Structured summary of a file's contents.
 
-    The fields are deliberately simple so they can be easily serialized to JSON
-    and understood by downstream agents.
+    Attributes
+    ----------
+    file_path: str
+        The absolute path that was processed.
+    line_count: int
+        Number of lines in the file.
+    word_count: int
+        Number of whitespace‑separated words.
+    preview: str
+        First 200 characters of the file (or the whole file if shorter).
+    error: Optional[str]
+        Human‑readable error message when the file could not be read.
     """
 
-    file_path: str = Field(..., description="Absolute path to the file that was read")
-    size_bytes: int = Field(..., description="Size of the file in bytes")
-    line_count: int = Field(..., description="Total number of lines in the file")
-    word_count: int = Field(..., description="Total number of whitespace‑separated words")
-    preview: List[str] = Field(
-        ..., description="First few lines of the file (up to `preview_lines`)")
+    file_path: str = Field(..., description="Absolute path of the processed file")
+    line_count: int = Field(..., description="Number of lines in the file")
+    word_count: int = Field(..., description="Number of words in the file")
+    preview: str = Field(..., description="First 200 characters of the file content")
     error: Optional[str] = Field(
-        None, description="Error message if the file could not be read")
+        None, description="Error message if the file could not be read"
+    )
 
-def _read_file(path: Path) -> str:
-    """Read the entire file content as text.
 
-    Raises:
-        OSError: If the file cannot be opened or read.
+async def _read_file(path: Path) -> str:
+    """Read a file as UTF‑8 text.
+
+    This helper isolates the I/O so that the public ``summarize_file``
+    function stays focused on the summarisation logic.
     """
-    # Using UTF‑8 with replacement characters to avoid crashes on binary data.
-    return path.read_text(encoding="utf-8", errors="replace")
+    # ``Path.read_text`` raises appropriate exceptions which we will catch
+    # in the caller.
+    return path.read_text(encoding="utf-8")
 
-def _summarize_content(content: str, preview_lines: int = 5) -> dict:
-    """Create a summary dictionary from raw file content.
 
-    Returns a mapping compatible with the ``FileSummary`` model (excluding the
-    ``file_path`` and ``error`` fields).
+async def summarize_file(file_path: str) -> FileSummary:
+    """Read *file_path* and return a :class:`FileSummary`.
+
+    The function is deliberately tolerant – any exception results in a
+    ``FileSummary`` with ``error`` populated while the other fields contain
+    safe default values.
     """
-    lines = content.splitlines()
-    line_count = len(lines)
-    word_count = sum(len(line.split()) for line in lines)
-    preview = lines[:preview_lines]
-    return {
-        "line_count": line_count,
-        "word_count": word_count,
-        "preview": preview,
-    }
+    # Resolve to an absolute path for reproducibility.
+    path = Path(file_path).expanduser().resolve()
 
-def summarize_file(path: str, preview_lines: int = 5) -> FileSummary:
-    """Read *path* and return a :class:`FileSummary`.
+    # Default values used when an error occurs.
+    line_count = 0
+    word_count = 0
+    preview = ""
+    error_msg: Optional[str] = None
 
-    The function is deliberately pure – it does not depend on any MCP context –
-    so it can be unit‑tested in isolation.
-    """
-    file_path = Path(path).expanduser().resolve()
     try:
-        # Ensure the file exists and is a regular file.
-        if not file_path.is_file():
-            raise FileNotFoundError(f"File not found: {file_path}")
-        size_bytes = file_path.stat().st_size
-        raw_content = _read_file(file_path)
-        summary_data = _summarize_content(raw_content, preview_lines)
-        return FileSummary(
-            file_path=str(file_path),
-            size_bytes=size_bytes,
-            **summary_data,
-        )
-    except Exception as exc:  # Broad catch to convert any I/O error to a model.
-        return FileSummary(
-            file_path=str(file_path),
-            size_bytes=0,
-            line_count=0,
-            word_count=0,
-            preview=[],
-            error=str(exc),
-        )
+        if not path.is_file():
+            raise FileNotFoundError(f"Path does not point to a regular file: {path}")
+        content = await _read_file(path)
+        lines = content.splitlines()
+        line_count = len(lines)
+        word_count = len(content.split())
+        preview = content[:200]
+    except FileNotFoundError as exc:
+        error_msg = str(exc)
+    except PermissionError as exc:
+        error_msg = f"Permission denied: {exc}"
+    except OSError as exc:
+        # Catch any other OS‑related errors (e.g., encoding issues).
+        error_msg = f"Unable to read file: {exc}"
+    except Exception as exc:  # pragma: no cover – safety net.
+        error_msg = f"Unexpected error: {exc}"
+
+    return FileSummary(
+        file_path=str(path),
+        line_count=line_count,
+        word_count=word_count,
+        preview=preview,
+        error=error_msg,
+    )
+
 
 # ---------------------------------------------------------------------------
-# MCP tool registration
+# Registration helper – when run directly we start a minimal MCP server exposing
+# the ``summarize_file`` tool.  This keeps the module usable both as a library
+# and as a standalone demo.
 # ---------------------------------------------------------------------------
-
-mcp = FastMCP("File Summary Server")
-
-@mcp.tool()
-def file_summary(path: str) -> FileSummary:
-    """MCP‑compatible tool that returns a structured summary of *path*.
-
-    The tool delegates to :func:`summarize_file` and therefore inherits its
-    error‑handling behaviour.  The returned ``FileSummary`` model is automatically
-    serialized by the MCP runtime.
-    """
-    return summarize_file(path)
-
 if __name__ == "__main__":
-    # Running the module directly starts a stdio‑based MCP server exposing the
-    # ``file_summary`` tool.
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP(name="File Summary Server")
+
+    @mcp.tool()
+    async def summarize(path: str) -> FileSummary:  # pragma: no cover
+        """MCP‑exposed wrapper around :func:`summarize_file`."""
+        return await summarize_file(path)
+
+    # Run the server using the default stdio transport.
     mcp.run()
