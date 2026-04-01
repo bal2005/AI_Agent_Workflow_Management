@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { fetchDomains, fetchAgents, fetchLLMConfigs, fetchTasks, createTask, updateTask, deleteTask, dryRunTask } from "../api";
+import { fetchDomains, fetchAgents, fetchLLMConfigs, fetchTasks, fetchAgentToolAccess, createTask, updateTask, deleteTask, dryRunTask } from "../api";
 import { toPlainText } from "../utils/sanitizeLlmResponse";
 import FolderPicker from "./FolderPicker";
 
@@ -65,6 +65,21 @@ const s = {
   btnSecondary: { background: "#2d3148", color: "#cbd5e1" },
   btnDanger: { background: "#7f1d1d", color: "#fca5a5" },
   btnDryRun: { background: "#0f2a1a", border: "1px solid #166534", color: "#4ade80", padding: "9px 20px", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600 },
+  accessCard: { background: "#0f1117", border: "1px solid #2d3148", borderRadius: 10, padding: "14px 16px", marginTop: 12 },
+  accessTitle: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "#7c85a2", marginBottom: 10 },
+  pillRow: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 },
+  pill: (active, tone = "blue") => ({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "4px 10px",
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 600,
+    border: `1px solid ${active ? (tone === "green" ? "#166534" : "#6366f1") : "#2d3148"}`,
+    background: active ? (tone === "green" ? "#0f2a1a" : "#1e1f3a") : "#13151f",
+    color: active ? (tone === "green" ? "#4ade80" : "#818cf8") : "#64748b",
+  }),
   // Result
   resultBox: { background: "#0a0c14", border: "1px solid #1e2130", borderRadius: 8, padding: "14px 16px", minHeight: 100, fontFamily: "monospace", fontSize: 13, color: "#a3e635", whiteSpace: "pre-wrap", lineHeight: 1.6 },
   stepsBox: { background: "#0f1117", border: "1px solid #1e2130", borderRadius: 8, padding: "12px 14px", marginBottom: 12 },
@@ -93,6 +108,7 @@ export default function TaskCreationPage({ onViewTask }) {
   const [dryRunRunning, setDryRunRunning] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [agentWebAccess, setAgentWebAccess] = useState(null);
 
   const load = async () => {
     const [d, a, c, t] = await Promise.all([
@@ -150,6 +166,23 @@ export default function TaskCreationPage({ onViewTask }) {
   const selectAgent = (agentId) => {
     setForm(prev => ({ ...prev, agent_id: prev.agent_id === agentId ? null : agentId }));
   };
+
+  useEffect(() => {
+    const loadAgentWebAccess = async () => {
+      if (!form.agent_id) {
+        setAgentWebAccess(null);
+        return;
+      }
+      try {
+        const rows = await fetchAgentToolAccess(form.agent_id);
+        const webRow = rows.find(r => r.tool_key === "web" || r.tool_key === "web_search");
+        setAgentWebAccess(webRow || null);
+      } catch {
+        setAgentWebAccess(null);
+      }
+    };
+    loadAgentWebAccess();
+  }, [form.agent_id]);
 
   const selectedAgent = agents.find(a => a.id === form.agent_id);
   const selectedDomain = selectedAgent ? domains.find(d => d.id === selectedAgent.domain_id) : null;
@@ -306,6 +339,24 @@ export default function TaskCreationPage({ onViewTask }) {
           selectedAgent={selectedAgent}
           selectedDomain={selectedDomain}
         />
+
+        {selectedAgent && (
+          <div style={s.accessCard}>
+            <div style={s.accessTitle}>Web Access</div>
+            <div style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.5 }}>
+              Web search is controlled by the selected agent&apos;s tool permissions.
+              Configure Tavily access in Tools Management for this agent.
+            </div>
+            <div style={s.pillRow}>
+              <span style={s.pill(!!agentWebAccess?.granted_permissions?.includes("perform_search"), "blue")}>
+                perform_search
+              </span>
+              <span style={s.pill(!!agentWebAccess?.granted_permissions?.includes("open_result_links"), "green")}>
+                open_result_links
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* 3. LLM Configuration */}
         <LLMConfigSection

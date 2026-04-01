@@ -2,14 +2,14 @@
 Agent Runner — executes inside the sandbox container using the Copilot SDK.
 
 Flow:
-  1. Read task payload from /workspace/.task_input.json
+  1. Read task payload from /run_workspace/.task_input.json
   2. Decrypt API key using ENCRYPTION_KEY env var
   3. Build Copilot SDK Tool objects for each permitted tool
   4. Create a CopilotClient session with BYOK provider config
   5. Register on_pre_tool_use hook — enforces granted_permissions at runtime
   6. Send user message, wait for session.idle event
-  7. Write structured output to /workspace/.task_output.json
-  8. Write human-readable log to /workspace/run.log
+  7. Write structured output to /run_workspace/.task_output.json
+  8. Write human-readable log to /run_workspace/run.log
 
 The SDK handles the tool call / result loop internally.
 Permission enforcement happens in on_pre_tool_use before any tool executes.
@@ -114,7 +114,7 @@ def _shell_exec(command: str) -> str:
         return f"Error: {e}"
 
 
-def _web_search(query: str, max_results: int = 8) -> str:
+def _web_search(query: str, max_results: int = 8, topic: str = "general") -> str:
     """Tavily web search — requires TAVILY_API_KEY env var."""
     import httpx
     key = os.environ.get("TAVILY_API_KEY", "").strip()
@@ -123,8 +123,14 @@ def _web_search(query: str, max_results: int = 8) -> str:
     try:
         resp = httpx.post(
             "https://api.tavily.com/search",
-            json={"api_key": key, "query": query, "max_results": min(max_results, 10),
-                  "search_depth": "basic", "include_answer": True},
+            json={
+                "api_key": key,
+                "query": query,
+                "max_results": min(max_results, 10),
+                "search_depth": "basic",
+                "topic": topic,
+                "include_answer": True,
+            },
             timeout=30,
         )
         resp.raise_for_status()
@@ -142,17 +148,57 @@ def _web_search(query: str, max_results: int = 8) -> str:
         return f"[Search error] {e}"
 
 
+def _search_news(query: str, max_results: int = 8) -> str:
+    return _web_search(query, max_results=max_results, topic="news")
+
+
+def _search_domain(query: str, domain: str, max_results: int = 6) -> str:
+    return _web_search(f"site:{domain} {query}", max_results=max_results)
+
+
+def _open_result_link(url: str) -> str:
+    return _extract_page_content(url, max_chars=2000)
+
+
+def _extract_page_content(url: str, max_chars: int = 8000) -> str:
+    import httpx
+    key = os.environ.get("TAVILY_API_KEY", "").strip()
+    if not key:
+        return "[Search error] TAVILY_API_KEY not set in container environment"
+    try:
+        resp = httpx.post(
+            "https://api.tavily.com/extract",
+            json={"api_key": key, "urls": [url]},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        if results:
+            r = results[0]
+            title = r.get("title", "")
+            content = r.get("raw_content", "") or r.get("content", "")
+            return f"Title: {title}\nURL: {url}\n\n{content[:max_chars]}"
+    except Exception:
+        pass
+    return f"URL: {url}\n\n[extract unavailable]"
+
+
 # ── Permission-gated Copilot SDK Tool builder ─────────────────────────────────
 
 # Maps tool name → (tool_key, permission_key)
 # tool_key matches the key in granted_permissions dict
 # permission_key is the specific permission required
 _TOOL_PERMISSION_MAP = {
-    "read_file":          ("filesystem", "read_files"),
-    "write_file":         ("filesystem", "write_files"),
-    "list_directory":     ("filesystem", "read_files"),
-    "shell_exec":         ("shell",      "execute_commands"),
-    "perform_web_search": ("web",        "perform_search"),
+    "read_file":            ("filesystem",  "read_files"),
+    "write_file":           ("filesystem",  "write_files"),
+    "list_directory":       ("filesystem",  "read_files"),
+    "shell_exec":           ("shell",       "execute_commands"),
+    "perform_web_search":   ("web_search",  "perform_search"),
+    "search_news":          ("web_search",  "perform_search"),
+    "search_domain":        ("web_search",  "perform_search"),
+    "open_result_link":     ("web_search",  "open_links"),
+    "extract_page_content": ("web_search",  "open_links"),
 }
 
 
@@ -227,6 +273,50 @@ def _build_sdk_tools(
                 "required": ["query"],
             },
         },
+        "search_news": {
+            "description": "Search for recent news articles using Tavily.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query":       {"type": "string",  "description": "News search query"},
+                    "max_results": {"type": "integer", "description": "Max results (default 8)"},
+                },
+                "required": ["query"],
+            },
+        },
+        "search_domain": {
+            "description": "Search within a specific website domain using Tavily.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query":       {"type": "string",  "description": "Search query"},
+                    "domain":      {"type": "string",  "description": "Domain to restrict search to"},
+                    "max_results": {"type": "integer", "description": "Max results (default 6)"},
+                },
+                "required": ["query", "domain"],
+            },
+        },
+        "open_result_link": {
+            "description": "Open a URL and return a preview of its content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Full URL to open"},
+                },
+                "required": ["url"],
+            },
+        },
+        "extract_page_content": {
+            "description": "Fetch a URL and extract full clean readable text content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Full URL to fetch"},
+                    "max_chars": {"type": "integer", "description": "Max characters to return (default 8000)"},
+                },
+                "required": ["url"],
+            },
+        },
     }
 
     tools = []
@@ -263,6 +353,14 @@ def _build_sdk_tools(
                     result = _shell_exec(args.get("command", ""))
                 elif name == "perform_web_search":
                     result = _web_search(args.get("query", ""), args.get("max_results", 8))
+                elif name == "search_news":
+                    result = _search_news(args.get("query", ""), args.get("max_results", 8))
+                elif name == "search_domain":
+                    result = _search_domain(args.get("query", ""), args.get("domain", ""), args.get("max_results", 6))
+                elif name == "open_result_link":
+                    result = _open_result_link(args.get("url", ""))
+                elif name == "extract_page_content":
+                    result = _extract_page_content(args.get("url", ""), args.get("max_chars", 8000))
                 else:
                     result = f"No handler for tool: {name}"
                 log.info(f"Tool result [{name}]: {result[:120]}{'...' if len(result) > 120 else ''}")
@@ -610,6 +708,14 @@ def _dispatch(name: str, args: dict, workspace: Path) -> str:
         return _shell_exec(args.get("command", ""))
     elif name == "perform_web_search":
         return _web_search(args.get("query", ""), args.get("max_results", 8))
+    elif name == "search_news":
+        return _search_news(args.get("query", ""), args.get("max_results", 8))
+    elif name == "search_domain":
+        return _search_domain(args.get("query", ""), args.get("domain", ""), args.get("max_results", 6))
+    elif name == "open_result_link":
+        return _open_result_link(args.get("url", ""))
+    elif name == "extract_page_content":
+        return _extract_page_content(args.get("url", ""), args.get("max_chars", 8000))
     return f"Unknown tool: {name}"
 
 
@@ -620,6 +726,10 @@ def _build_openai_tool_defs(tool_names: list[str]) -> list[dict]:
         "list_directory":     {"description": "List directory",       "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": []}},
         "shell_exec":         {"description": "Run shell command",    "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
         "perform_web_search": {"description": "Search the web",       "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}}, "required": ["query"]}},
+        "search_news":        {"description": "Search recent news",   "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}}, "required": ["query"]}},
+        "search_domain":      {"description": "Search a domain",      "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "domain": {"type": "string"}, "max_results": {"type": "integer"}}, "required": ["query", "domain"]}},
+        "open_result_link":   {"description": "Open a result link",   "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
+        "extract_page_content":{"description": "Extract page content","parameters": {"type": "object", "properties": {"url": {"type": "string"}, "max_chars": {"type": "integer"}}, "required": ["url"]}},
     }
     return [{"type": "function", "function": {"name": n, **defs[n]}} for n in tool_names if n in defs]
 
@@ -627,15 +737,17 @@ def _build_openai_tool_defs(tool_names: list[str]) -> list[dict]:
 # ── Container entrypoint ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    workspace   = Path("/workspace")
-    input_file  = workspace / ".task_input.json"
-    output_file = workspace / ".task_output.json"
+    workspace = Path("/workspace")
+    run_workspace = Path("/run_workspace")
+    control_workspace = run_workspace if run_workspace.exists() else workspace
+    input_file = control_workspace / ".task_input.json"
+    output_file = control_workspace / ".task_output.json"
 
     if not input_file.exists():
         output_file.write_text(json.dumps({"success": False, "error": "No .task_input.json found"}))
         sys.exit(1)
 
     payload = json.loads(input_file.read_text())
-    result  = run_agent_task(payload, workspace)
+    result = run_agent_task(payload, workspace)
     output_file.write_text(json.dumps(result, indent=2))
     sys.exit(0 if result.get("success") else 1)

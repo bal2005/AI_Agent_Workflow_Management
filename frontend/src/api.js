@@ -16,8 +16,8 @@ export const deleteAgent = (id) => api.delete(`/agents/${id}`);
 export const createAgent = (formData) =>
   api.post("/agents/", formData, { headers: { "Content-Type": "multipart/form-data" } });
 
-export const runPlayground = (system_prompt, user_prompt, llm_config_id = null, domain_prompt = null) =>
-  api.post("/agents/playground", { system_prompt, user_prompt, llm_config_id, domain_prompt }).then(r => r.data);
+export const runPlayground = (system_prompt, user_prompt, llm_config_id = null, domain_prompt = null, web_permissions = null) =>
+  api.post("/agents/playground", { system_prompt, user_prompt, llm_config_id, domain_prompt, web_permissions }).then(r => r.data);
 
 // LLM Configs
 export const fetchLLMConfigs = () => api.get("/llm-configs/").then(r => r.data);
@@ -57,3 +57,6 @@ export const runScheduleNow = (id) => api.post(`/schedules/${id}/run-now`).then(
 export const fetchScheduleRuns = (id, limit = 20) => api.get(`/schedules/${id}/runs`, { params: { limit } }).then(r => r.data);
 export const fetchRun = (runId) => api.get(`/schedules/runs/${runId}`).then(r => r.data);
 export const fetchAllRuns = (params = {}) => api.get("/schedules/all-runs", { params }).then(r => r.data);
+
+// Dashboard
+export const fetchDashboardSummary = () => api.get("/dashboard/summary").then(r => r.data);

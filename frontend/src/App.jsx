@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams } from "react-router-dom";
+import DashboardPage from "./components/DashboardPage";
 import LandingPage from "./components/LandingPage";
 import AgentCreationPage from "./components/AgentCreationPage";
 import SidePanel from "./components/SidePanel";
@@ -66,7 +67,8 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/"                  element={<LandingPage />} />
+        <Route path="/"                  element={shell("dashboard", <DashboardPage />)} />
+        <Route path="/about"             element={<LandingPage />} />
         <Route path="/agents"            element={shell("agents", <AgentCreationPage domains={domains} onRefresh={refresh} prefillAgent={selectedAgent} onClearPrefill={() => setSelectedAgent(null)} onOpenLLMConfig={() => window.location.href = "/llm"} activeLLMConfig={activeLLMConfig} />)} />
         <Route path="/llm"               element={shell("llm",          <LLMConfigPage />)} />
         <Route path="/tools"             element={shell("tools",         <ToolsManagementPage />)} />

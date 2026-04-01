@@ -20,6 +20,19 @@ from app.database import get_db
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
 
+def _reload_trigger(schedule_id: int, deleted: bool = False) -> None:
+    """Reload or stop the filesystem trigger listener for a schedule."""
+    try:
+        from app.triggers.trigger_registry import registry
+        if deleted:
+            registry.stop_one(schedule_id)
+        else:
+            registry.reload(schedule_id)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Trigger reload failed for schedule {schedule_id}: {e}")
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _load(schedule_id: int, db: Session) -> models.Schedule:
@@ -132,15 +145,20 @@ def create_schedule(payload: schemas.ScheduleCreate, db: Session = Depends(get_d
         cron_expression=payload.cron_expression,
         is_active=payload.is_active,
         workflow_json=payload.workflow_json,
+        trigger_config=payload.trigger_config,
     )
     db.add(schedule)
-    db.flush()  # get id before syncing tasks
+    db.flush()
 
     if payload.task_ids:
         _sync_tasks(schedule, payload.task_ids, db)
 
     schedule.next_run_at = _compute_next_run(schedule)
     db.commit()
+
+    # Reload filesystem trigger listener if applicable
+    _reload_trigger(schedule.id)
+
     return _load(schedule.id, db)
 
 
@@ -161,6 +179,16 @@ def get_run(run_id: int, db: Session = Depends(get_db)):
     if not d.schedule_name and run.schedule:
         d.schedule_name = run.schedule.name
     return d
+
+
+@router.get("/trigger-status")
+def trigger_status():
+    """Return status of all active filesystem listeners."""
+    try:
+        from app.triggers.trigger_registry import registry
+        return {"listeners": registry.status()}
+    except Exception as e:
+        return {"listeners": [], "error": str(e)}
 
 
 @router.get("/{schedule_id}", response_model=schemas.ScheduleOut)
@@ -190,6 +218,10 @@ def update_schedule(schedule_id: int, payload: schemas.ScheduleUpdate, db: Sessi
     db.commit()
     result = _load(schedule_id, db)
     logger.info(f"[PATCH schedule {schedule_id}] after save workflow_json: {result.workflow_json}")
+
+    # Reload filesystem trigger listener if applicable
+    _reload_trigger(schedule_id)
+
     return result
 
 @router.delete("/{schedule_id}", status_code=204)
@@ -199,6 +231,8 @@ def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Schedule not found")
     db.delete(s)
     db.commit()
+    # Stop filesystem listener if one was running
+    _reload_trigger(schedule_id, deleted=True)
 
 
 # ── Run Now ───────────────────────────────────────────────────────────────────
@@ -323,3 +357,31 @@ def list_runs(schedule_id: int, limit: int = 20, db: Session = Depends(get_db)):
             d.schedule_name = run.schedule.name
         result.append(d)
     return result
+
+
+# ── Filesystem Trigger endpoints ──────────────────────────────────────────────
+
+@router.get("/{schedule_id}/trigger-logs")
+def get_trigger_logs(schedule_id: int, limit: int = 50, db: Session = Depends(get_db)):
+    """Return recent filesystem trigger events for a schedule."""
+    from app import models as m
+    logs = (
+        db.query(m.TriggerLog)
+        .filter(m.TriggerLog.schedule_id == schedule_id)
+        .order_by(m.TriggerLog.triggered_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id":             l.id,
+            "event_type":     l.event_type,
+            "file_path":      l.file_path,
+            "matched":        l.matched,
+            "debounced":      l.debounced,
+            "workflow_fired": l.workflow_fired,
+            "notes":          l.notes,
+            "triggered_at":   l.triggered_at.isoformat() if l.triggered_at else None,
+        }
+        for l in logs
+    ]

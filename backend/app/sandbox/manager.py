@@ -28,6 +28,33 @@ from app.sandbox.logging_config import get_logger
 
 log = get_logger("sandbox.manager")
 
+# Load .env so ENCRYPTION_KEY and TAVILY_API_KEY are available
+# (they're set via python-dotenv in the app but not exported as shell env vars)
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    # Load from the app's .env file — ENCRYPTION_KEY is not exported as a shell
+    # env var, only loaded by python-dotenv at app startup. We need it here to
+    # pass to sandbox containers via docker run --env.
+    _load_dotenv(dotenv_path="/app/.env", override=True)
+except Exception:
+    pass
+
+
+def _read_key_from_env_file(key_name: str) -> str:
+    """Read a key directly from /app/.env as fallback when os.environ doesn't have it."""
+    val = os.environ.get(key_name, "")
+    if val:
+        return val
+    try:
+        with open("/app/.env") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(f"{key_name}="):
+                    return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return ""
+
 # SANDBOX_BASE — path inside the backend container where workspaces are created (file I/O)
 SANDBOX_BASE = Path(os.environ.get("SANDBOX_BASE", "/sandbox_host")).resolve()
 
@@ -154,8 +181,8 @@ class SandboxManager:
             "--memory", f"{memory_mb}m",
             "--cpus", str(cpus),
             "--env", f"RUN_ID={self.run_id}",
-            "--env", f"ENCRYPTION_KEY={os.environ.get('ENCRYPTION_KEY', '')}",
-            "--env", f"TAVILY_API_KEY={os.environ.get('TAVILY_API_KEY', '')}",
+            "--env", f"ENCRYPTION_KEY={_read_key_from_env_file('ENCRYPTION_KEY')}",
+            "--env", f"TAVILY_API_KEY={_read_key_from_env_file('TAVILY_API_KEY')}",
             "--user", "root",
             AGENT_IMAGE,
         ]

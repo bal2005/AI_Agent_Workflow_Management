@@ -117,6 +117,10 @@ def delete_agent(agent_id: int, db: Session = Depends(get_db)):
 @router.post("/playground")
 async def run_playground(payload: schemas.PlaygroundRequest, db: Session = Depends(get_db)):
     from app.prompt_utils import compose_agent_prompt
+    from app.web_tools import build_web_tools
+    from app.routers.task_playground import _run_agent_loop
+    from pathlib import Path
+    import tempfile
 
     print(f"[PLAYGROUND] domain_prompt received: {repr(payload.domain_prompt)}", flush=True)
     print(f"[PLAYGROUND] system_prompt received: {repr(payload.system_prompt[:80] if payload.system_prompt else None)}", flush=True)
@@ -140,5 +144,18 @@ async def run_playground(payload: schemas.PlaygroundRequest, db: Session = Depen
         payload.system_prompt,
         payload.user_prompt,
     )
+    web_permissions = payload.web_permissions or {}
+    print(f"[PLAYGROUND] web_permissions received: {web_permissions}", flush=True)
+    web_tools = build_web_tools(web_permissions)
+    if web_tools:
+        result, _steps = await _run_agent_loop(
+            config,
+            system,
+            user_msg,
+            Path(tempfile.gettempdir()),
+            web_tools,
+        )
+        return {"result": result}
+
     result = await run_via_copilot_sdk(config, system, user_msg, allow_tools=False)
     return {"result": result}

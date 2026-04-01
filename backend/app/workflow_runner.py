@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 _FS_READ_TOOLS  = {"list_directory", "read_file"}
 _FS_WRITE_TOOLS = {"write_file", "edit_file", "append_to_file"}
-_WEB_TOOLS      = {"perform_web_search", "search_news", "extract_page_content"}
+_WEB_TOOLS      = {"perform_web_search", "search_news", "search_domain", "open_result_link", "extract_page_content"}
 
 # Built-in CLI tools we never want the model to call via BYOK
 _BLOCKED_BUILTIN_TOOLS = {
@@ -61,8 +61,10 @@ def _allowed_tool_names(task: models.Task, db=None) -> set[str]:
     if db and task.agent_id:
         from app.sandbox.permissions import PermissionChecker
         checker = PermissionChecker.from_db(db, task.agent_id)
-        if checker.allowed("web", "perform_search"):
+        if checker.allowed("web_search", "perform_search"):
             allowed |= _WEB_TOOLS
+        if checker.allowed("web_search", "open_links"):
+            allowed |= {"open_result_link", "extract_page_content"}
 
     return allowed
 
@@ -197,18 +199,42 @@ def _build_sdk_tools(task: models.Task) -> list:
     # Check if agent has web search permission
     if task.agent_id:
         try:
-            from app.sandbox.permissions import PermissionChecker
             # Note: _build_sdk_tools is called without db in some paths,
-            # so we check the task's agent tool_access relationship directly
+            # so we check the task's agent tool_access relationship directly.
             for access in (task.agent.tool_access if task.agent else []):
-                if hasattr(access, 'tool') and access.tool and access.tool.key == "web":
-                    if "perform_search" in (access.granted_permissions or []):
+                if hasattr(access, "tool") and access.tool and access.tool.key == "web":
+                    granted = set(access.granted_permissions or [])
+                    if "perform_search" in granted or "open_result_links" in granted:
+                        from app.web_tools import (
+                            perform_web_search,
+                            search_news,
+                            search_domain,
+                            open_result_link,
+                            extract_page_content,
+                        )
+
                         async def handle_web_search(inv):
                             args = inv.get("arguments", {})
-                            from app.web_tools import perform_web_search
                             result = perform_web_search(
                                 args.get("query", ""),
                                 args.get("max_results", 8),
+                            )
+                            return {"textResultForLlm": result, "resultType": "success"}
+
+                        async def handle_search_news(inv):
+                            args = inv.get("arguments", {})
+                            result = search_news(
+                                args.get("query", ""),
+                                args.get("max_results", 8),
+                            )
+                            return {"textResultForLlm": result, "resultType": "success"}
+
+                        async def handle_search_domain(inv):
+                            args = inv.get("arguments", {})
+                            result = search_domain(
+                                args.get("query", ""),
+                                args.get("domain", ""),
+                                args.get("max_results", 6),
                             )
                             return {"textResultForLlm": result, "resultType": "success"}
 
@@ -225,6 +251,72 @@ def _build_sdk_tools(task: models.Task) -> list:
                             },
                             handler=handle_web_search,
                         ))
+                        tools.append(Tool(
+                            name="search_news",
+                            description="Search for recent news articles using Tavily.",
+                            parameters={
+                                "type": "object",
+                                "properties": {
+                                    "query":       {"type": "string",  "description": "News search query"},
+                                    "max_results": {"type": "integer", "description": "Max results (default 8)"},
+                                },
+                                "required": ["query"],
+                            },
+                            handler=handle_search_news,
+                        ))
+                        tools.append(Tool(
+                            name="search_domain",
+                            description="Search within a specific website domain using Tavily.",
+                            parameters={
+                                "type": "object",
+                                "properties": {
+                                    "query":       {"type": "string",  "description": "Search query"},
+                                    "domain":      {"type": "string",  "description": "Domain to restrict search to"},
+                                    "max_results": {"type": "integer", "description": "Max results (default 6)"},
+                                },
+                                "required": ["query", "domain"],
+                            },
+                            handler=handle_search_domain,
+                        ))
+                        if "open_result_links" in granted:
+                            async def handle_open_result_link(inv):
+                                args = inv.get("arguments", {})
+                                result = open_result_link(args.get("url", ""))
+                                return {"textResultForLlm": result, "resultType": "success"}
+
+                            async def handle_extract_page_content(inv):
+                                args = inv.get("arguments", {})
+                                result = extract_page_content(
+                                    args.get("url", ""),
+                                    args.get("max_chars", 8000),
+                                )
+                                return {"textResultForLlm": result, "resultType": "success"}
+
+                            tools.append(Tool(
+                                name="open_result_link",
+                                description="Open a URL and return a preview of its content.",
+                                parameters={
+                                    "type": "object",
+                                    "properties": {
+                                        "url": {"type": "string", "description": "Full URL to open"},
+                                    },
+                                    "required": ["url"],
+                                },
+                                handler=handle_open_result_link,
+                            ))
+                            tools.append(Tool(
+                                name="extract_page_content",
+                                description="Fetch a URL and extract full clean readable text content.",
+                                parameters={
+                                    "type": "object",
+                                    "properties": {
+                                        "url": {"type": "string", "description": "Full URL to fetch"},
+                                        "max_chars": {"type": "integer", "description": "Max characters to return (default 8000)"},
+                                    },
+                                    "required": ["url"],
+                                },
+                                handler=handle_extract_page_content,
+                            ))
                         break
         except Exception:
             pass  # permissions not loadable — skip web tools
@@ -484,9 +576,9 @@ async def _execute_task_fallback(
         from app.sandbox.permissions import PermissionChecker
         from app.web_tools import build_web_tools
         checker = PermissionChecker.from_db(db, task.agent_id)
-        if checker.allowed("web", "perform_search"):
+        if checker.allowed("web_search", "perform_search"):
             web_perms = {"perform_search": True}
-            if checker.allowed("web", "open_result_links"):
+            if checker.allowed("web_search", "open_links"):
                 web_perms["open_result_links"] = True
             tools += build_web_tools(web_perms)
 
@@ -542,7 +634,7 @@ def run_task_in_workflow(
             f"\n\nYou have access to these tools: {', '.join(sorted(allowed))}."
             f"\nIMPORTANT: When the task asks you to create, write, or save a file, "
             f"you MUST call the write_file tool — do not just describe the file contents in text."
-            f"\nWhen the task requires current information from the internet, use perform_web_search."
+            f"\nWhen the task requires current information from the internet, use perform_web_search, search_news, or search_domain as appropriate."
             f"\nDo not attempt shell, container, or system-level operations."
         )
         agent_prompt = agent_prompt + tool_hint
@@ -663,22 +755,41 @@ def run_task_in_sandbox(
             available_tools += ["write_file"]
 
     # Add web search if agent has perform_search permission
-    if checker.allowed("web", "perform_search"):
-        available_tools.append("perform_web_search")
+    if checker.allowed("web_search", "perform_search"):
+        available_tools.extend(["perform_web_search", "search_news", "search_domain"])
+    if checker.allowed("web_search", "open_links"):
+        available_tools.extend(["open_result_link", "extract_page_content"])
 
-    # Resolve the workspace folder for this run.
-    # If the task has a folder_path configured, use it.
-    # Otherwise auto-create a dedicated folder under /workspace (sandbox_data)
-    # named after the task so output is always persisted and easy to find.
-    import re
+    # ── Workspace resolution — decoupled from task.folder_path ──────────────
+    # Each run always gets its own isolated workspace under:
+    #   /workspace/runs/{run_id}/
+    # This removes the dependency on task.folder_path for execution.
+    #
+    # If task.folder_path is set, it is used as a READ-ONLY source:
+    #   - Its contents are copied into the run workspace before execution
+    #   - The agent reads/writes in the run workspace, not the source folder
+    #   - This preserves the source folder and isolates each run
+    #
+    # If task.folder_path is not set, the run workspace starts empty.
+    # The agent creates all output files there.
+    import re, shutil
+
+    safe_name = re.sub(r"[^\w\-]", "_", task.name.lower()).strip("_")[:30]
+    run_workspace = Path("/workspace") / "runs" / f"{safe_name}_{run_id}"
+    run_workspace.mkdir(parents=True, exist_ok=True)
+
+    # Copy source files into run workspace if task has a folder_path
     if task.folder_path:
-        effective_folder = task.folder_path
-    else:
-        # Sanitise task name for use as a directory name
-        safe_name = re.sub(r"[^\w\-]", "_", task.name.lower()).strip("_")[:40]
-        auto_folder = Path("/workspace") / f"{safe_name}_run_{run_id}"
-        auto_folder.mkdir(parents=True, exist_ok=True)
-        effective_folder = str(auto_folder)
+        source = Path(task.folder_path)
+        if source.exists() and source.is_dir():
+            for item in source.iterdir():
+                dest = run_workspace / item.name
+                if item.is_file() and not dest.exists():
+                    shutil.copy2(item, dest)
+            print(f"[WorkflowRunner] Copied source files from {source} → {run_workspace}", flush=True)
+
+    effective_folder = str(run_workspace)
+    print(f"[WorkflowRunner] Run workspace: {effective_folder}", flush=True)
 
     task_payload = {
         "system_prompt":       system_prompt,
@@ -701,7 +812,7 @@ def run_task_in_sandbox(
     # Need network if LLM is a remote endpoint (not localhost)
     base_url = (cfg.base_url or "").lower()
     needs_network = (
-        checker.allowed("web", "perform_search")
+        checker.allowed("web_search", "perform_search")
         or not any(h in base_url for h in ("localhost", "127.0.0.1", "host.docker.internal"))
     )
 

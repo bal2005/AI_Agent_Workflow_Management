@@ -47,6 +47,7 @@ class PlaygroundRequest(BaseModel):
     user_prompt: str
     llm_config_id: Optional[int] = None
     domain_prompt: Optional[str] = None  # prepended before system_prompt
+    web_permissions: Optional[dict] = None
 
 class PlaygroundResponse(BaseModel):
     result: str
@@ -230,13 +231,14 @@ class ScheduleTaskItem(BaseModel):
 class ScheduleCreate(BaseModel):
     name: str
     description: Optional[str] = None
-    trigger_type: str = "manual"          # manual | interval | cron
+    trigger_type: str = "manual"          # manual | interval | cron | filesystem
     interval_value: Optional[int] = None
-    interval_unit: Optional[str] = None   # minutes | hours | days
+    interval_unit: Optional[str] = None
     cron_expression: Optional[str] = None
     is_active: bool = True
     task_ids: list[ScheduleTaskItem] = []
-    workflow_json: Optional[dict] = None  # visual workflow graph from the builder
+    workflow_json: Optional[dict] = None
+    trigger_config: Optional[dict] = None  # filesystem trigger config
 
 
 class ScheduleUpdate(BaseModel):
@@ -248,7 +250,8 @@ class ScheduleUpdate(BaseModel):
     cron_expression: Optional[str] = None
     is_active: Optional[bool] = None
     task_ids: Optional[list[ScheduleTaskItem]] = None
-    workflow_json: Optional[dict] = None  # visual workflow graph from the builder
+    workflow_json: Optional[dict] = None
+    trigger_config: Optional[dict] = None  # filesystem trigger config
 
     model_config = {"from_attributes": True}
 
@@ -271,7 +274,8 @@ class ScheduleOut(BaseModel):
     cron_expression: Optional[str] = None
     is_active: bool
     next_run_at: Optional[datetime] = None
-    workflow_json: Optional[dict] = None  # visual workflow graph
+    workflow_json: Optional[dict] = None
+    trigger_config: Optional[dict] = None
     created_at: datetime
     updated_at: datetime
     schedule_tasks: list[ScheduleTaskOut] = []

@@ -24,6 +24,7 @@ const s = {
 };
 
 const PAGES = [
+  { path: "/",            label: "📊 Dashboard" },
   { path: "/agents",      label: "🤖 Agents" },
   { path: "/tools",       label: "🔧 Tools" },
   { path: "/task-create", label: "📋 Tasks" },
@@ -41,6 +42,7 @@ export default function Navbar() {
 
   // Match active: /task-details/:id should highlight /task-create
   const isActive = (path) => {
+    if (path === "/") return pathname === "/";
     if (path === "/task-create") return pathname.startsWith("/task-create") || pathname.startsWith("/task-details");
     return pathname === path || pathname.startsWith(path + "/");
   };

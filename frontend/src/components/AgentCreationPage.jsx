@@ -67,6 +67,10 @@ export default function AgentCreationPage({ domains: domainsProp, onRefresh, pre
   const [playgroundResult, setPlaygroundResult] = useState("");
   const [playgroundEngine, setPlaygroundEngine] = useState(null); // "copilot-sdk" | "direct" | null
   const [playgroundLoading, setPlaygroundLoading] = useState(false);
+  const [webPerms, setWebPerms] = useState({
+    perform_search: false,
+    open_result_links: false,
+  });
 
   const [submitError, setSubmitError] = useState("");
   const [submitSuccess, setSubmitSuccess] = useState("");
@@ -152,7 +156,7 @@ export default function AgentCreationPage({ domains: domainsProp, onRefresh, pre
 
     setPlaygroundLoading(true); setPlaygroundResult(""); setPlaygroundEngine(null);
     try {
-      const data = await runPlayground(effectivePrompt, userPrompt, activeLLMConfig?.id || null, domainPrompt);
+      const data = await runPlayground(effectivePrompt, userPrompt, activeLLMConfig?.id || null, domainPrompt, webPerms);
       setPlaygroundResult(toPlainText(data.result));
       setPlaygroundEngine(data.engine || "direct");
     } catch (e) {
@@ -180,6 +184,7 @@ export default function AgentCreationPage({ domains: domainsProp, onRefresh, pre
       setSubmitSuccess(`Agent "${agentName}" created`);
       setAgentName(""); setSystemPrompt(""); setSelectedDomainId(""); setMdFile(null);
       setUserPrompt(""); setPlaygroundResult(""); setNameExists(null);
+      setWebPerms({ perform_search: false, open_result_links: false });
       onClearPrefill(); onRefresh();
     } catch (e) { setSubmitError(e.response?.data?.detail || "Failed to create agent"); }
   };
@@ -318,6 +323,37 @@ export default function AgentCreationPage({ domains: domainsProp, onRefresh, pre
             placeholder="Type a test message..."
             value={userPrompt} onChange={e => { setUserPrompt(e.target.value); setFormErrors(f => ({ ...f, userPrompt: "" })); }} />
           {formErrors.userPrompt && <div style={s.error}>{formErrors.userPrompt}</div>}
+        </div>
+
+        <div style={s.fieldGroup}>
+          <label style={s.label}>Playground Web Access</label>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {[
+              ["perform_search", "Perform Search"],
+              ["open_result_links", "Open Result Links"],
+            ].map(([key, label]) => (
+              <div
+                key={key}
+                onClick={() => setWebPerms(p => ({ ...p, [key]: !p[key] }))}
+                style={{
+                  padding: "7px 14px",
+                  borderRadius: 20,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  background: webPerms[key] ? "#4f46e5" : "#1e2130",
+                  border: `1px solid ${webPerms[key] ? "#6366f1" : "#2d3748"}`,
+                  color: webPerms[key] ? "#fff" : "#64748b",
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                {webPerms[key] ? "✓ " : ""}{label}
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 12, color: "#475569", marginTop: 6 }}>
+            These toggle Tavily access for the prompt test only.
+          </div>
         </div>
 
         <div style={s.fieldGroup}>

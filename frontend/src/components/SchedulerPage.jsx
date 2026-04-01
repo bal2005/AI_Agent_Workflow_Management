@@ -60,6 +60,18 @@ const s = {
   btnSecondary: { background: "#2d3148", color: "#cbd5e1" },
   btnDanger:    { background: "#7f1d1d", color: "#fca5a5" },
   btnRun:       { background: "#0f2a1a", border: "1px solid #166534", color: "#4ade80", padding: "8px 18px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700 },
+  callout:      { background: "#0f1117", border: "1px solid #2d3148", borderRadius: 8, padding: "12px 14px", marginTop: 12, color: "#94a3b8", fontSize: 12, lineHeight: 1.5 },
+  pillRow:      { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 },
+  pill:         (active) => ({
+    display: "inline-flex",
+    padding: "4px 10px",
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 600,
+    border: `1px solid ${active ? "#6366f1" : "#2d3148"}`,
+    background: active ? "#1e1f3a" : "#13151f",
+    color: active ? "#818cf8" : "#64748b",
+  }),
   // Workflow preview strip
   wfStrip:      { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: "10px 14px", background: "#0f1117", borderRadius: 8, border: "1px solid #2d3148", marginTop: 8 },
   wfNode:       (type) => ({
@@ -81,9 +93,10 @@ const s = {
 };
 
 const TRIGGER_TYPES = [
-  { id: "manual",   label: "Manual",   desc: "Run on demand only" },
-  { id: "interval", label: "Interval", desc: "Every X minutes/hours/days" },
-  { id: "cron",     label: "Cron",     desc: "Cron expression" },
+  { id: "manual",     label: "Manual",     desc: "Run on demand only" },
+  { id: "interval",   label: "Interval",   desc: "Every X minutes/hours/days" },
+  { id: "cron",       label: "Cron",       desc: "Cron expression" },
+  { id: "filesystem", label: "📁 File Watch", desc: "Trigger on file/folder changes" },
 ];
 const INTERVAL_UNITS = ["minutes", "hours", "days"];
 
@@ -91,6 +104,10 @@ const emptyForm = {
   name: "", description: "", trigger_type: "manual",
   interval_value: "", interval_unit: "minutes", cron_expression: "",
   is_active: true, task_ids: [], workflow_json: null,
+  // Filesystem trigger config
+  fs_watch_path: "", fs_recursive: true, fs_events: ["created", "modified"],
+  fs_extension_filter: "", fs_filename_pattern: "", fs_debounce_seconds: 3,
+  fs_enabled: true,
 };
 
 export default function SchedulerPage({ onOpenRunHistory }) {
@@ -142,6 +159,14 @@ export default function SchedulerPage({ onOpenRunHistory }) {
       is_active: sc.is_active,
       task_ids: sc.schedule_tasks?.map(st => ({ task_id: st.task_id, position: st.position })) || [],
       workflow_json: wf,
+      // Filesystem trigger config
+      fs_watch_path:        sc.trigger_config?.watch_path || "",
+      fs_recursive:         sc.trigger_config?.recursive ?? true,
+      fs_events:            sc.trigger_config?.events || ["created", "modified"],
+      fs_extension_filter:  (sc.trigger_config?.extension_filter || []).join(", "),
+      fs_filename_pattern:  sc.trigger_config?.filename_pattern || "",
+      fs_debounce_seconds:  sc.trigger_config?.debounce_seconds ?? 3,
+      fs_enabled:           sc.trigger_config?.enabled ?? true,
     });
     setMsg({ type: "", text: "" });
   };
@@ -175,7 +200,7 @@ export default function SchedulerPage({ onOpenRunHistory }) {
   // ── Save ─────────────────────────────────────────────────────────────────
 
   const buildPayload = () => {
-    const f = formRef.current;  // always latest form, never stale closure
+    const f = formRef.current;
     const p = {
       name: f.name.trim(),
       description: f.description || null,
@@ -186,6 +211,18 @@ export default function SchedulerPage({ onOpenRunHistory }) {
       is_active: f.is_active,
       task_ids: f.task_ids,
       workflow_json: f.workflow_json || null,
+      // Build trigger_config for filesystem triggers
+      trigger_config: f.trigger_type === "filesystem" ? {
+        watch_path:       f.fs_watch_path.trim(),
+        recursive:        f.fs_recursive,
+        events:           f.fs_events,
+        extension_filter: f.fs_extension_filter
+          ? f.fs_extension_filter.split(",").map(e => e.trim()).filter(Boolean)
+          : null,
+        filename_pattern: f.fs_filename_pattern.trim() || null,
+        debounce_seconds: Number(f.fs_debounce_seconds) || 3,
+        enabled:          f.fs_enabled,
+      } : null,
     };
     console.log("[WF] buildPayload workflow_json:", p.workflow_json);
     return p;
@@ -331,7 +368,7 @@ export default function SchedulerPage({ onOpenRunHistory }) {
             <TriggerSection form={form} setForm={setForm} f={f} />
 
             {/* ── 3. Workflow Builder entry point ── */}
-            <WorkflowSection
+      <WorkflowSection
               form={form}
               allTasks={allTasks}
               onOpenBuilder={() => setShowBuilder(true)}
@@ -407,7 +444,7 @@ function TriggerSection({ form, setForm, f }) {
         <div style={s.radioRow}>
           {TRIGGER_TYPES.map(t => (
             <div key={t.id} style={s.radioChip(form.trigger_type === t.id)}
-              onClick={() => setFormAndRef(p => ({ ...p, trigger_type: t.id }))} title={t.desc}>
+              onClick={() => setForm(p => ({ ...p, trigger_type: t.id }))} title={t.desc}>
               {t.label}
             </div>
           ))}
@@ -443,6 +480,10 @@ function TriggerSection({ form, setForm, f }) {
       )}
       {form.trigger_type === "manual" && (
         <div style={{ fontSize: 12, color: "#475569" }}>This schedule runs only when triggered manually via Run Now.</div>
+      )}
+
+      {form.trigger_type === "filesystem" && (
+        <FilesystemTriggerConfig form={form} setForm={setForm} />
       )}
     </div>
   );
@@ -510,6 +551,158 @@ function WorkflowSection({ form, allTasks, onOpenBuilder }) {
             </div>
           )}
         </>
+      )}
+
+      <div style={s.callout}>
+        Web permissions are not stored on the schedule itself. Each linked task uses the selected agent&apos;s
+        Tavily permissions. Use Tools Management to control <code>perform_search</code> and <code>open_result_links</code>.
+      </div>
+    </div>
+  );
+}
+
+// ── Filesystem Trigger Configuration ─────────────────────────────────────────
+
+const FS_EVENT_OPTIONS = [
+  { id: "created",  label: "Created" },
+  { id: "modified", label: "Modified" },
+  { id: "deleted",  label: "Deleted" },
+  { id: "moved",    label: "Moved / Renamed" },
+];
+
+function FilesystemTriggerConfig({ form, setForm }) {
+  const toggleEvent = (evtId) => {
+    setForm(prev => {
+      const current = prev.fs_events || [];
+      const next = current.includes(evtId)
+        ? current.filter(e => e !== evtId)
+        : [...current, evtId];
+      return { ...prev, fs_events: next };
+    });
+  };
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      {/* Watch path */}
+      <div style={s.fieldGroup}>
+        <label style={s.label}>Watch Path *</label>
+        <input
+          style={s.input}
+          placeholder="/workspace/incoming  or  C:/Users/you/Documents/incoming"
+          value={form.fs_watch_path || ""}
+          onChange={e => setForm(p => ({ ...p, fs_watch_path: e.target.value }))}
+        />
+        <div style={s.hint}>Absolute path to the folder to watch. Must be accessible by the backend.</div>
+      </div>
+
+      {/* Events */}
+      <div style={s.fieldGroup}>
+        <label style={s.label}>Watch Events</label>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {FS_EVENT_OPTIONS.map(opt => {
+            const active = (form.fs_events || []).includes(opt.id);
+            return (
+              <div
+                key={opt.id}
+                style={{
+                  padding: "5px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                  border: `1px solid ${active ? "#6366f1" : "#2d3148"}`,
+                  background: active ? "#1e1f3a" : "#0f1117",
+                  color: active ? "#818cf8" : "#64748b",
+                  transition: "all .12s",
+                }}
+                onClick={() => toggleEvent(opt.id)}
+              >
+                {opt.label}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Recursive + Target */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div>
+          <label style={s.label}>Recursive</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            {[true, false].map(v => (
+              <div
+                key={String(v)}
+                style={s.radioChip(form.fs_recursive === v)}
+                onClick={() => setForm(p => ({ ...p, fs_recursive: v }))}
+              >
+                {v ? "Yes (subfolders)" : "No (top level only)"}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label style={s.label}>Enabled</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            {[true, false].map(v => (
+              <div
+                key={String(v)}
+                style={s.radioChip(form.fs_enabled === v)}
+                onClick={() => setForm(p => ({ ...p, fs_enabled: v }))}
+              >
+                {v ? "Active" : "Paused"}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Extension filter + filename pattern */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div>
+          <label style={s.label}>Extension Filter (optional)</label>
+          <input
+            style={s.input}
+            placeholder=".pdf, .txt, .csv"
+            value={form.fs_extension_filter || ""}
+            onChange={e => setForm(p => ({ ...p, fs_extension_filter: e.target.value }))}
+          />
+          <div style={s.hint}>Comma-separated. Leave blank for all files.</div>
+        </div>
+        <div>
+          <label style={s.label}>Filename Pattern (optional)</label>
+          <input
+            style={s.input}
+            placeholder="report_*.pdf"
+            value={form.fs_filename_pattern || ""}
+            onChange={e => setForm(p => ({ ...p, fs_filename_pattern: e.target.value }))}
+          />
+          <div style={s.hint}>fnmatch pattern. Leave blank to match all filenames.</div>
+        </div>
+      </div>
+
+      {/* Debounce */}
+      <div style={s.fieldGroup}>
+        <label style={s.label}>Debounce (seconds)</label>
+        <input
+          style={{ ...s.input, width: 120 }}
+          type="number"
+          min="0"
+          max="60"
+          value={form.fs_debounce_seconds ?? 3}
+          onChange={e => setForm(p => ({ ...p, fs_debounce_seconds: e.target.value }))}
+        />
+        <div style={s.hint}>
+          Minimum seconds between workflow triggers. Prevents duplicate runs from rapid file saves.
+          Default: 3s.
+        </div>
+      </div>
+
+      {/* Summary */}
+      {form.fs_watch_path && (
+        <div style={{ padding: "10px 14px", background: "#0f1117", borderRadius: 8, border: "1px solid #2d3148", fontSize: 12, color: "#64748b", marginTop: 8 }}>
+          Watching <span style={{ color: "#818cf8" }}>{form.fs_watch_path}</span>
+          {form.fs_recursive ? " (recursive)" : " (top level)"}
+          {" · "}events: <span style={{ color: "#22d3ee" }}>{(form.fs_events || []).join(", ") || "none"}</span>
+          {form.fs_extension_filter ? ` · ext: ${form.fs_extension_filter}` : ""}
+          {form.fs_filename_pattern ? ` · pattern: ${form.fs_filename_pattern}` : ""}
+          {" · "}debounce: {form.fs_debounce_seconds}s
+        </div>
       )}
     </div>
   );

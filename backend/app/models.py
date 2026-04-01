@@ -183,6 +183,9 @@ class Schedule(Base):
     next_run_at = Column(DateTime(timezone=True), nullable=True)
     # Visual workflow graph — { "nodes": [...] } — stored as JSON, managed by the frontend builder
     workflow_json = Column(JSON, nullable=True)
+    # Trigger configuration for non-manual triggers
+    # For trigger_type="filesystem": {"watch_path":..., "recursive":..., "events":[...], ...}
+    trigger_config = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -245,3 +248,20 @@ class ScheduleTaskRun(Base):
 
     run = relationship("ScheduleRun", back_populates="task_runs")
     task = relationship("Task")
+
+
+class TriggerLog(Base):
+    """Records every filesystem event detected by the watchdog listener."""
+    __tablename__ = "trigger_logs"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    schedule_id   = Column(Integer, ForeignKey("schedules.id"), nullable=False)
+    event_type    = Column(String(50), nullable=False)   # created|modified|deleted|moved
+    file_path     = Column(String(1000), nullable=True)
+    matched       = Column(Boolean, nullable=False, default=True)
+    debounced     = Column(Boolean, nullable=False, default=False)
+    workflow_fired = Column(Boolean, nullable=False, default=False)
+    notes         = Column(Text, nullable=True)
+    triggered_at  = Column(DateTime(timezone=True), server_default=func.now())
+
+    schedule = relationship("Schedule")

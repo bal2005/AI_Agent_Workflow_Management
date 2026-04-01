@@ -16,6 +16,7 @@ export default defineConfig({
       "/health":         { target: "http://localhost:8000", changeOrigin: true },
       "/fs":             { target: "http://localhost:8000", changeOrigin: true },
       "/sandbox":        { target: "http://localhost:8000", changeOrigin: true },
+      "/dashboard":      { target: "http://localhost:8000", changeOrigin: true },
     },
   },
 });

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { fetchTasks, fetchTaskRuns, fetchTaskSchedules, runTask } from "../api";
+import { fetchTasks, fetchTaskRuns, fetchTaskSchedules, fetchAgentToolAccess, runTask } from "../api";
 
 // ── Styles (mirrors SchedulerPage) ────────────────────────────────────────────
 const s = {
@@ -83,6 +83,7 @@ export default function TaskDetailsPage({ taskId, onBack }) {
   const [msg, setMsg]                 = useState({ type: "", text: "" });
   const [loading, setLoading]         = useState(true);
   const [search, setSearch]           = useState("");
+  const [agentWebAccess, setAgentWebAccess] = useState(null);
 
   // Load task list always
   const loadList = useCallback(async () => {
@@ -113,6 +114,23 @@ export default function TaskDetailsPage({ taskId, onBack }) {
     if (activeId) loadDetail(activeId);
     else { setTask(null); setRuns([]); setSchedules([]); }
   }, [activeId, loadDetail]);
+
+  useEffect(() => {
+    const loadAccess = async () => {
+      if (!task?.agent_id) {
+        setAgentWebAccess(null);
+        return;
+      }
+      try {
+        const rows = await fetchAgentToolAccess(task.agent_id);
+        const webRow = rows.find(r => r.tool_key === "web" || r.tool_key === "web_search");
+        setAgentWebAccess(webRow || null);
+      } catch {
+        setAgentWebAccess(null);
+      }
+    };
+    loadAccess();
+  }, [task?.agent_id]);
 
   useEffect(() => { if (taskId) setActiveId(taskId); }, [taskId]);
 
@@ -243,6 +261,22 @@ export default function TaskDetailsPage({ taskId, onBack }) {
                 <div style={s.fieldLabel}>Description / Prompt</div>
                 <div style={s.monoBox}>{task.description}</div>
               </div>
+              {task.agent && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={s.fieldLabel}>Web Access</div>
+                  <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8 }}>
+                    Web permissions come from the linked agent. Update them in Tools Management.
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <span style={s.badge(agentWebAccess?.granted_permissions?.includes("perform_search") ? "workflow" : "draft")}>
+                      perform_search
+                    </span>
+                    <span style={s.badge(agentWebAccess?.granted_permissions?.includes("open_result_links") ? "workflow" : "draft")}>
+                      open_result_links
+                    </span>
+                  </div>
+                </div>
+              )}
               {task.workflow && (
                 <div>
                   <div style={s.fieldLabel}>Workflow Steps</div>
