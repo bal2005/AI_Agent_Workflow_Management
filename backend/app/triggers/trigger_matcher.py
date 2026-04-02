@@ -71,7 +71,15 @@ _EVENT_TYPE_MAP = {
 
 
 def event_type_str(event) -> str:
-    """Convert a watchdog event object to our simple type string."""
+    """Convert a watchdog event object to our simple type string.
+
+    Prefers the event's own .event_type attribute (set by watchdog on all
+    modern versions) and falls back to class-name mapping for older builds.
+    """
+    # watchdog sets event.event_type = "created" | "modified" | "deleted" | "moved"
+    native = getattr(event, "event_type", None)
+    if native:
+        return native
     return _EVENT_TYPE_MAP.get(type(event).__name__, "unknown")
 
 

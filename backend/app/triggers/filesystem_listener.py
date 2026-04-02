@@ -148,9 +148,13 @@ class FilesystemListener:
     def start(self) -> bool:
         """
         Start watching. Returns True on success, False if path doesn't exist.
+
+        Uses PollingObserver by default — inotify/FSEvents are unreliable on
+        Docker Desktop bind mounts (the kernel events never reach the container).
+        Polling adds a small latency (~5s) but is 100% reliable across platforms.
         """
         try:
-            from watchdog.observers import Observer
+            from watchdog.observers.polling import PollingObserver
             from watchdog.events import FileSystemEventHandler
         except ImportError:
             log.error("watchdog not installed. Run: pip install watchdog")
@@ -164,8 +168,6 @@ class FilesystemListener:
         path = Path(watch_path)
         if not path.exists():
             log.warning(f"[schedule={self.schedule_id}] watch path does not exist: {path}")
-            # Still create the observer — watchdog will handle it gracefully
-            # when the path appears later (on some platforms)
 
         recursive = bool(self.config.get("recursive", True))
         handler = FileTriggerHandler(self.schedule_id, self.config)
@@ -177,7 +179,7 @@ class FilesystemListener:
             def dispatch(self, event):
                 self._inner.dispatch(event)
 
-        observer = Observer()
+        observer = PollingObserver()
         try:
             observer.schedule(_WatchdogAdapter(handler), str(path), recursive=recursive)
         except Exception as e:
@@ -186,7 +188,7 @@ class FilesystemListener:
 
         observer.start()
         self._observer = observer
-        log.info(f"[schedule={self.schedule_id}] watching {path} (recursive={recursive})")
+        log.info(f"[schedule={self.schedule_id}] polling {path} (recursive={recursive})")
         return True
 
     def stop(self) -> None:
