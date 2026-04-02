@@ -335,13 +335,18 @@ def _build_sdk_tools(
         _pkey = permission_key
 
         def _make_handler(name, tkey, pkey):
-            async def handler(invocation: dict) -> dict:
-                args = invocation.get("arguments", {})
+            async def handler(invocation) -> object:
+                # invocation is a ToolInvocation dataclass — .arguments is already parsed
+                args = invocation.arguments if isinstance(invocation.arguments, dict) else {}
                 if pkey and tkey:
                     if pkey not in granted_permissions.get(tkey, []):
                         msg = f"PERMISSION DENIED: '{pkey}' not granted on '{tkey}'"
                         log.warning(f"[{name}] {msg}")
-                        return {"textResultForLlm": msg, "resultType": "error"}
+                        try:
+                            from copilot.types import ToolResult
+                            return ToolResult(text_result_for_llm=msg, result_type="denied")
+                        except ImportError:
+                            return {"textResultForLlm": msg, "resultType": "denied"}
                 log.info(f"Executing tool: {name}({args})")
                 if name == "read_file":
                     result = _read_file(workspace, args.get("path", ""))
@@ -364,7 +369,11 @@ def _build_sdk_tools(
                 else:
                     result = f"No handler for tool: {name}"
                 log.info(f"Tool result [{name}]: {result[:120]}{'...' if len(result) > 120 else ''}")
-                return {"textResultForLlm": result, "resultType": "success"}
+                try:
+                    from copilot.types import ToolResult
+                    return ToolResult(text_result_for_llm=result, result_type="success")
+                except ImportError:
+                    return {"textResultForLlm": result, "resultType": "success"}
             return handler
 
         tools.append(Tool(
@@ -380,21 +389,20 @@ def _build_sdk_tools(
 
 # ── Copilot SDK provider config builder ───────────────────────────────────────
 
-def _build_provider(base_url: str, api_key: str, provider_hint: str = "openai") -> dict:
-    """Build the Copilot SDK provider dict from BYOK config."""
+def _build_provider(base_url: str, api_key: str, provider_hint: str = "openai"):
+    """Build a typed ProviderConfig for the Copilot SDK (v1.0.0b+)."""
+    from copilot.types import ProviderConfig
     provider_type = "openai"
     if provider_hint == "claude":
         provider_type = "anthropic"
     elif provider_hint == "azure":
         provider_type = "azure"
-
-    p: dict = {"type": provider_type}
-    url = base_url.rstrip("/") if base_url else ""
-    if url:
-        p["base_url"] = url
-    if api_key:
-        p["api_key"] = api_key
-    return p
+    url = base_url.rstrip("/") if base_url else None
+    return ProviderConfig(
+        type=provider_type,
+        base_url=url or None,
+        api_key=api_key or None,
+    )
 
 
 # ── Main async agent loop using Copilot SDK ───────────────────────────────────
@@ -409,135 +417,82 @@ async def _run_with_sdk(
     max_tokens: Optional[float],
     sdk_tools: list,
     granted_permissions: dict,
+    provider_hint: str,
     log: logging.Logger,
 ) -> tuple[str, list[str]]:
     """
-    Run the agent using the Copilot SDK with BYOK provider.
-    Supports SDK 0.1.x (positional dict) and 0.2.x (keyword-only args).
+    Run the agent using the Copilot SDK typed API (v1.0.0b+).
 
-    ── PLACEHOLDER ──────────────────────────────────────────────────────────────
-    This function is kept as a placeholder for when a native GitHub Copilot
-    API key is available. The SDK's custom Tool objects with handlers work
-    correctly with GitHub Copilot's own model endpoints.
-
-    Currently NOT called for BYOK providers — run_agent_task() routes those
-    to _run_direct_httpx() instead, which correctly sends tool schemas to
-    the external model as standard OpenAI function definitions.
-
-    To activate: set a native GitHub Copilot API key and update the BYOK
-    detection logic in run_agent_task().
-    ─────────────────────────────────────────────────────────────────────────────
-    Returns (final_text, tool_usage_log).
+    Uses SessionConfig dataclass + send_and_wait(MessageOptions).
+    Raises on failure so run_agent_task can fall back to direct httpx.
     """
     from copilot import CopilotClient, PermissionHandler
-    import inspect
+    from copilot.types import (
+        SessionConfig, SessionHooks, MessageOptions,
+        SystemMessageReplaceConfig, InfiniteSessionConfig,
+        PreToolUseHookInput, PreToolUseHookOutput,
+        PostToolUseHookInput,
+        ErrorOccurredHookInput,
+    )
 
     tool_usage_log: list[str] = []
-    final_text = ""
-    done_event = asyncio.Event()
 
-    async def on_pre_tool_use(input_data, invocation):
-        if not isinstance(input_data, dict):
-            return {"permissionDecision": "allow"}
-        tool_name = input_data.get("toolName", "")
+    async def on_pre_tool_use(inp: PreToolUseHookInput, ctx: dict) -> PreToolUseHookOutput:
+        tool_name = inp.toolName if hasattr(inp, "toolName") else ""
         tool_key, permission_key = _TOOL_PERMISSION_MAP.get(tool_name, ("", ""))
         if tool_key and permission_key:
             if permission_key not in granted_permissions.get(tool_key, []):
                 msg = f"⛔ DENIED: {tool_name} (needs '{permission_key}' on '{tool_key}')"
                 log.warning(msg)
                 tool_usage_log.append(msg)
-                return {"permissionDecision": "deny"}
+                return PreToolUseHookOutput(permissionDecision="deny")
         tool_usage_log.append(f"✅ allowed: {tool_name}")
-        return {"permissionDecision": "allow", "modifiedArgs": input_data.get("toolArgs")}
+        return PreToolUseHookOutput(permissionDecision="allow")
 
-    async def on_post_tool_use(input_data, invocation):
-        if isinstance(input_data, dict):
-            tool_usage_log.append(f"🔧 {input_data.get('toolName', '?')}() completed")
-        return {}
+    async def on_post_tool_use(inp: PostToolUseHookInput, ctx: dict) -> None:
+        tool_name = inp.toolName if hasattr(inp, "toolName") else "?"
+        tool_usage_log.append(f"🔧 {tool_name}() completed")
 
-    async def on_error_occurred(input_data, invocation):
-        if isinstance(input_data, dict):
-            err = input_data.get("error", "")
-            ctx = input_data.get("errorContext", "")
-            log.warning(f"SDK error in {ctx}: {err}")
-            tool_usage_log.append(f"⚠ error skipped: {str(err)[:120]}")
-        return {"errorHandling": "skip"}
+    async def on_error_occurred(inp: ErrorOccurredHookInput, ctx: dict) -> None:
+        err = getattr(inp, "error", str(inp))
+        log.warning(f"SDK error: {err}")
+        tool_usage_log.append(f"⚠ error: {str(err)[:120]}")
 
-    def on_event(event):
-        nonlocal final_text
-        event_type = event.type.value if hasattr(event.type, "value") else str(event.type)
-        if event_type == "assistant.message":
-            final_text = getattr(event.data, "content", "") or ""
-            log.info(f"Assistant message received ({len(final_text)} chars)")
-        elif event_type == "session.idle":
-            log.info("Session idle — workflow complete")
-            done_event.set()
+    hooks = SessionHooks(
+        on_pre_tool_use=on_pre_tool_use,
+        on_post_tool_use=on_post_tool_use,
+        on_error_occurred=on_error_occurred,
+    )
 
-    extra_body: dict = {}
-    if temperature is not None:
-        extra_body["temperature"] = temperature
-    if max_tokens is not None:
-        extra_body["max_tokens"] = int(max_tokens)
-
-    provider = _build_provider(base_url, api_key)
-    hooks = {
-        "on_pre_tool_use":   on_pre_tool_use,
-        "on_post_tool_use":  on_post_tool_use,
-        "on_error_occurred": on_error_occurred,
-    }
-
-    # Detect SDK version: 0.2.x uses keyword-only args; 0.1.x uses positional dict
-    sig = inspect.signature(CopilotClient.create_session)
-    param_names = list(sig.parameters.keys())
-    is_v2 = len(param_names) > 1 and param_names[1] == "on_permission_request"
-    log.info(f"SDK API: {'v0.2.x keyword-only' if is_v2 else 'v0.1.x positional dict'}")
+    session_cfg = SessionConfig(
+        model=model,
+        system_message=SystemMessageReplaceConfig(mode="replace", content=system_prompt),
+        on_permission_request=PermissionHandler.approve_all,
+        provider=_build_provider(base_url, api_key, provider_hint),
+        tools=sdk_tools,
+        hooks=hooks,
+        infinite_sessions=InfiniteSessionConfig(enabled=False),
+    )
 
     client = CopilotClient()
     session = None
 
     try:
-        log.info(f"Starting session | model={model} tools={[t.name for t in sdk_tools]}")
+        log.info(f"Starting SDK session | model={model} tools={[t.name for t in sdk_tools]}")
         await client.start()
+        session = await client.create_session(session_cfg)
 
-        if is_v2:
-            # SDK 0.2.x — keyword-only, on_event is a create_session param
-            # Do NOT pass available_tools=[] — it acts as a whitelist and
-            # overrides custom tools, preventing them from being sent to the model.
-            # Custom Tool objects in `tools=` are sufficient.
-            session = await client.create_session(
-                on_permission_request=PermissionHandler.approve_all,
-                model=model,
-                system_message={"mode": "replace", "content": system_prompt},
-                tools=sdk_tools,
-                provider=provider,
-                infinite_sessions={"enabled": False},
-                hooks=hooks,
-                on_event=on_event,
-            )
-            await session.send(user_message)
+        event = await session.send_and_wait(
+            MessageOptions(prompt=user_message),
+            timeout=180.0,
+        )
+
+        if event is None:
+            final_text = "[No response — session timed out]"
         else:
-            # SDK 0.1.x — positional session_config dict, session.on() for events
-            session_config: dict = {
-                "model": model,
-                "system_message": {"mode": "replace", "content": system_prompt},
-                "on_permission_request": PermissionHandler.approve_all,
-                "provider": provider,
-                "tools": sdk_tools,
-                "available_tools": [],
-                "infinite_sessions": {"enabled": False},
-                "hooks": hooks,
-            }
-            if extra_body:
-                session_config["extra_body"] = extra_body
-            session = await client.create_session(session_config)
-            session.on(on_event)
-            await session.send(user_message)
+            final_text = getattr(event.data, "content", None) or "[No response]"
 
-        try:
-            await asyncio.wait_for(done_event.wait(), timeout=180.0)
-        except asyncio.TimeoutError:
-            log.warning("Session timed out after 180s")
-            final_text = final_text or "[Timeout: no response within 180s]"
+        log.info(f"SDK session complete | output_chars={len(final_text)}")
 
     finally:
         if session:
@@ -550,7 +505,7 @@ async def _run_with_sdk(
         except Exception:
             pass
 
-    return final_text or "[No response]", tool_usage_log
+    return final_text, tool_usage_log
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -585,20 +540,9 @@ def run_agent_task(payload: dict, workspace: Path) -> dict:
     log.info(f"Config | model={model} provider={provider_hint} tools={available_tools}")
     log.info(f"Permissions | {granted_permissions}")
 
-    # BYOK providers (anything with a custom base_url) need direct httpx —
-    # the Copilot SDK does not forward custom Tool schemas to external models.
-    # The SDK is only effective when using GitHub Copilot's own model endpoints.
-    is_byok = bool(base_url and "copilot" not in base_url.lower() and "github" not in base_url.lower())
-
-    if is_byok:
-        log.info(f"BYOK provider detected ({base_url}) — using direct httpx agentic loop")
-        return _run_direct_httpx(
-            system_prompt, user_message, base_url, api_key, model,
-            temperature, max_tokens, available_tools, granted_permissions,
-            workspace, log,
-        )
-
-    # GitHub Copilot native endpoint — use the SDK with custom Tool objects
+    # ── Try Copilot SDK first (all providers) ─────────────────────────────────
+    # SDK supports BYOK via ProviderConfig(type="openai", base_url=..., api_key=...).
+    # Falls back to direct httpx on any SDK failure.
     sdk_tools = _build_sdk_tools(workspace, available_tools, granted_permissions, log)
     log.info(f"Built {len(sdk_tools)} SDK tool(s)")
 
@@ -613,20 +557,19 @@ def run_agent_task(payload: dict, workspace: Path) -> dict:
             max_tokens=max_tokens,
             sdk_tools=sdk_tools,
             granted_permissions=granted_permissions,
+            provider_hint=provider_hint,
             log=log,
         ))
-        log.info(f"Agent finished | output_chars={len(final_text)}")
+        log.info(f"Agent finished via SDK | output_chars={len(final_text)}")
         return {"success": True, "final_text": final_text, "tool_usage": tool_usage_log}
-    except ImportError as e:
-        log.error(f"Copilot SDK not available: {e} — falling back to direct httpx")
-        return _run_direct_httpx(
-            system_prompt, user_message, base_url, api_key, model,
-            temperature, max_tokens, available_tools, granted_permissions,
-            workspace, log,
-        )
     except Exception as e:
-        log.error(f"SDK run failed: {e}")
-        return {"success": False, "error": str(e), "tool_usage": []}
+        log.warning(f"SDK run failed: {e} — falling back to direct httpx")
+
+    return _run_direct_httpx(
+        system_prompt, user_message, base_url, api_key, model,
+        temperature, max_tokens, available_tools, granted_permissions,
+        workspace, log,
+    )
 
 
 # ── Direct httpx fallback (when SDK unavailable) ──────────────────────────────
