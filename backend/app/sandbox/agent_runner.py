@@ -421,21 +421,28 @@ async def _run_with_sdk(
     log: logging.Logger,
 ) -> tuple[str, list[str]]:
     """
-    Run the agent using the Copilot SDK typed API (v1.0.0b+).
+    Run the agent using the Copilot SDK.
 
-    Uses SessionConfig dataclass + send_and_wait(MessageOptions).
+    Compatible with both SDK versions found in the wild:
+      - github-copilot-sdk 0.2.0  → create_session(**kwargs), send_and_wait(str)
+      - agent-framework-github-copilot 1.0.0b+ → create_session(SessionConfig), send_and_wait(MessageOptions)
+
+    We detect which API is available at runtime and call accordingly.
     Raises on failure so run_agent_task can fall back to direct httpx.
     """
     from copilot import CopilotClient, PermissionHandler
     from copilot.types import (
-        SessionConfig, SessionHooks, MessageOptions,
-        SystemMessageReplaceConfig, InfiniteSessionConfig,
+        SessionHooks, ProviderConfig, InfiniteSessionConfig,
+        SystemMessageReplaceConfig,
         PreToolUseHookInput, PreToolUseHookOutput,
         PostToolUseHookInput,
         ErrorOccurredHookInput,
     )
+    import inspect
 
     tool_usage_log: list[str] = []
+
+    # ── Hooks ─────────────────────────────────────────────────────────────────
 
     async def on_pre_tool_use(inp: PreToolUseHookInput, ctx: dict) -> PreToolUseHookOutput:
         tool_name = inp.toolName if hasattr(inp, "toolName") else ""
@@ -464,28 +471,55 @@ async def _run_with_sdk(
         on_error_occurred=on_error_occurred,
     )
 
-    session_cfg = SessionConfig(
-        model=model,
-        system_message=SystemMessageReplaceConfig(mode="replace", content=system_prompt),
-        on_permission_request=PermissionHandler.approve_all,
-        provider=_build_provider(base_url, api_key, provider_hint),
-        tools=sdk_tools,
-        hooks=hooks,
-        infinite_sessions=InfiniteSessionConfig(enabled=False),
-    )
+    provider = _build_provider(base_url, api_key, provider_hint)
+    system_msg = SystemMessageReplaceConfig(mode="replace", content=system_prompt)
+    infinite = InfiniteSessionConfig(enabled=False)
+
+    # ── Detect SDK API variant ────────────────────────────────────────────────
+    # 0.2.0: create_session(*, on_permission_request, model, tools, ...) — keyword-only
+    #        send_and_wait(prompt: str, timeout=60.0)
+    # 1.0.0b: create_session(config: SessionConfig)
+    #         send_and_wait(MessageOptions(prompt=...), timeout=...)
+    sig = inspect.signature(CopilotClient.create_session)
+    params = list(sig.parameters.keys())
+    is_kwargs_api = len(params) > 1 and params[1] == "on_permission_request"
+    log.info(f"SDK API: {'0.2.x kwargs' if is_kwargs_api else '1.0.x SessionConfig'} | model={model} tools={len(sdk_tools)}")
 
     client = CopilotClient()
     session = None
 
     try:
-        log.info(f"Starting SDK session | model={model} tools={[t.name for t in sdk_tools]}")
         await client.start()
-        session = await client.create_session(session_cfg)
 
-        event = await session.send_and_wait(
-            MessageOptions(prompt=user_message),
-            timeout=180.0,
-        )
+        if is_kwargs_api:
+            # ── SDK 0.2.x ─────────────────────────────────────────────────────
+            session = await client.create_session(
+                on_permission_request=PermissionHandler.approve_all,
+                model=model,
+                system_message=system_msg,
+                tools=sdk_tools,
+                provider=provider,
+                hooks=hooks,
+                infinite_sessions=infinite,
+            )
+            event = await session.send_and_wait(user_message, timeout=180.0)
+        else:
+            # ── SDK 1.0.x ─────────────────────────────────────────────────────
+            from copilot.types import SessionConfig, MessageOptions
+            session_cfg = SessionConfig(
+                model=model,
+                system_message=system_msg,
+                on_permission_request=PermissionHandler.approve_all,
+                provider=provider,
+                tools=sdk_tools,
+                hooks=hooks,
+                infinite_sessions=infinite,
+            )
+            session = await client.create_session(session_cfg)
+            event = await session.send_and_wait(
+                MessageOptions(prompt=user_message),
+                timeout=180.0,
+            )
 
         if event is None:
             final_text = "[No response — session timed out]"
