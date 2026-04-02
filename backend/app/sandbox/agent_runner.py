@@ -103,13 +103,17 @@ def _list_directory(workspace: Path, path: str = ".") -> str:
         return f"Error: {e}"
 
 
-def _shell_exec(command: str) -> str:
+def _shell_exec(command: str, cwd: str | None = None) -> str:
     import subprocess
     try:
-        r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
-        return r.stdout + (f"\n[stderr] {r.stderr}" if r.stderr else "")
+        r = subprocess.run(
+            command, shell=True, capture_output=True, text=True,
+            timeout=30, cwd=cwd or "/workspace",
+        )
+        out = (r.stdout or "") + (f"\n[stderr] {r.stderr}" if r.stderr else "")
+        return out.strip()[:4000] or "(no output)"
     except subprocess.TimeoutExpired:
-        return "Error: command timed out"
+        return "Error: command timed out after 30s"
     except Exception as e:
         return f"Error: {e}"
 
@@ -255,10 +259,17 @@ def _build_sdk_tools(
             },
         },
         "shell_exec": {
-            "description": "Execute a shell command inside the sandbox container.",
+            "description": (
+                "Execute a shell command inside the sandbox container and return its output. "
+                "Use for: running Python scripts (python3 script.py), grep, netstat, ipconfig, "
+                "docker logs, pip install, git commands, or any CLI tool available in the environment."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {"command": {"type": "string", "description": "Shell command to run"}},
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to run"},
+                    "cwd":     {"type": "string", "description": "Working directory (optional, defaults to /workspace)"},
+                },
                 "required": ["command"],
             },
         },
@@ -355,7 +366,7 @@ def _build_sdk_tools(
                 elif name == "list_directory":
                     result = _list_directory(workspace, args.get("path", "."))
                 elif name == "shell_exec":
-                    result = _shell_exec(args.get("command", ""))
+                    result = _shell_exec(args.get("command", ""), cwd=args.get("cwd"))
                 elif name == "perform_web_search":
                     result = _web_search(args.get("query", ""), args.get("max_results", 8))
                 elif name == "search_news":
@@ -445,7 +456,7 @@ async def _run_with_sdk(
     # ── Hooks ─────────────────────────────────────────────────────────────────
 
     async def on_pre_tool_use(inp: PreToolUseHookInput, ctx: dict) -> PreToolUseHookOutput:
-        tool_name = inp.toolName if hasattr(inp, "toolName") else ""
+        tool_name = inp.get("toolName", "") if isinstance(inp, dict) else getattr(inp, "toolName", "")
         tool_key, permission_key = _TOOL_PERMISSION_MAP.get(tool_name, ("", ""))
         if tool_key and permission_key:
             if permission_key not in granted_permissions.get(tool_key, []):
@@ -457,11 +468,11 @@ async def _run_with_sdk(
         return PreToolUseHookOutput(permissionDecision="allow")
 
     async def on_post_tool_use(inp: PostToolUseHookInput, ctx: dict) -> None:
-        tool_name = inp.toolName if hasattr(inp, "toolName") else "?"
+        tool_name = inp.get("toolName", "?") if isinstance(inp, dict) else getattr(inp, "toolName", "?")
         tool_usage_log.append(f"🔧 {tool_name}() completed")
 
     async def on_error_occurred(inp: ErrorOccurredHookInput, ctx: dict) -> None:
-        err = getattr(inp, "error", str(inp))
+        err = inp.get("error", str(inp)) if isinstance(inp, dict) else getattr(inp, "error", str(inp))
         log.warning(f"SDK error: {err}")
         tool_usage_log.append(f"⚠ error: {str(err)[:120]}")
 
@@ -682,7 +693,7 @@ def _dispatch(name: str, args: dict, workspace: Path) -> str:
     elif name == "list_directory":
         return _list_directory(workspace, args.get("path", "."))
     elif name == "shell_exec":
-        return _shell_exec(args.get("command", ""))
+        return _shell_exec(args.get("command", ""), cwd=args.get("cwd"))
     elif name == "perform_web_search":
         return _web_search(args.get("query", ""), args.get("max_results", 8))
     elif name == "search_news":

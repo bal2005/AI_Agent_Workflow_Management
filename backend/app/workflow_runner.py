@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 _FS_READ_TOOLS  = {"list_directory", "read_file"}
 _FS_WRITE_TOOLS = {"write_file", "edit_file", "append_to_file"}
+_SHELL_TOOLS    = {"shell_exec"}
 _WEB_TOOLS      = {"perform_web_search", "search_news", "search_domain", "open_result_link", "extract_page_content"}
 
 # Built-in CLI tools we never want the model to call via BYOK
@@ -57,14 +58,19 @@ def _allowed_tool_names(task: models.Task, db=None) -> set[str]:
         if mode == "allowed":
             allowed |= _FS_WRITE_TOOLS
 
-    # Add web tools if the agent has perform_search permission in DB
+    # Add shell tools if agent has execute_commands permission
     if db and task.agent_id:
         from app.sandbox.permissions import PermissionChecker
         checker = PermissionChecker.from_db(db, task.agent_id)
+        if checker.allowed("shell", "execute_commands"):
+            allowed |= _SHELL_TOOLS
         if checker.allowed("web_search", "perform_search"):
             allowed |= _WEB_TOOLS
         if checker.allowed("web_search", "open_links"):
             allowed |= {"open_result_link", "extract_page_content"}
+    elif not db:
+        # No db — skip permission check, tools controlled by task config only
+        pass
 
     return allowed
 
@@ -164,6 +170,48 @@ def _build_sdk_tools(task: models.Task, db=None) -> list:
                          "required": ["path", "content"]},
                      handler=_append_file),
             ]
+
+    # ── Shell tool ────────────────────────────────────────────────────────────
+    has_shell = False
+    if db and task.agent_id:
+        try:
+            from app.sandbox.permissions import PermissionChecker
+            _checker = PermissionChecker.from_db(db, task.agent_id)
+            has_shell = _checker.allowed("shell", "execute_commands")
+        except Exception:
+            pass
+
+    if has_shell:
+        async def _shell_exec_tool(inv) -> ToolResult:
+            args = inv.arguments if isinstance(inv.arguments, dict) else {}
+            import subprocess
+            command = args.get("command", "")
+            cwd = args.get("cwd") or (str(root) if root else None)
+            try:
+                r = subprocess.run(
+                    command, shell=True, capture_output=True, text=True,
+                    timeout=30, cwd=cwd,
+                )
+                out = (r.stdout or "") + (f"\n[stderr] {r.stderr}" if r.stderr else "")
+                return _ok(out.strip()[:4000] or "(no output)")
+            except subprocess.TimeoutExpired:
+                return _err("Error: command timed out after 30s")
+            except Exception as e:
+                return _err(f"Error: {e}")
+
+        tools.append(Tool(
+            name="shell_exec",
+            description=(
+                "Execute a shell command and return its output. "
+                "Use for: running Python scripts, grep, netstat, ipconfig, docker logs, "
+                "pip install, git commands, or any CLI tool available in the environment."
+            ),
+            parameters={"type": "object", "properties": {
+                "command": {"type": "string", "description": "Shell command to execute"},
+                "cwd":     {"type": "string", "description": "Working directory (optional, defaults to task folder)"},
+            }, "required": ["command"]},
+            handler=_shell_exec_tool,
+        ))
 
     # ── Web search tools ──────────────────────────────────────────────────────
     has_search = False
@@ -351,7 +399,7 @@ async def execute_task_with_copilot(
     # ── Hooks ─────────────────────────────────────────────────────────────────
 
     async def on_pre_tool_use(inp: PreToolUseHookInput, ctx: dict) -> PreToolUseHookOutput:
-        tool_name = inp.toolName if hasattr(inp, "toolName") else ""
+        tool_name = inp.get("toolName", "") if isinstance(inp, dict) else getattr(inp, "toolName", "")
         if tool_name in _BLOCKED_BUILTIN_TOOLS or (allowed_tool_names and tool_name not in allowed_tool_names):
             logger.info(f"[WorkflowRunner] Blocking tool: {tool_name}")
             tool_usage_log.append(f"⛔ blocked: {tool_name}")
@@ -359,12 +407,12 @@ async def execute_task_with_copilot(
         return PreToolUseHookOutput(permissionDecision="allow")
 
     async def on_post_tool_use(inp: PostToolUseHookInput, ctx: dict) -> PostToolUseHookOutput | None:
-        tool_name = inp.toolName if hasattr(inp, "toolName") else "?"
+        tool_name = inp.get("toolName", "?") if isinstance(inp, dict) else getattr(inp, "toolName", "?")
         tool_usage_log.append(f"🔧 {tool_name}()")
         return None
 
     async def on_error_occurred(inp: ErrorOccurredHookInput, ctx: dict) -> ErrorOccurredHookOutput | None:
-        err = getattr(inp, "error", str(inp))
+        err = inp.get("error", str(inp)) if isinstance(inp, dict) else getattr(inp, "error", str(inp))
         logger.warning(f"[WorkflowRunner] SDK error: {err}")
         tool_usage_log.append(f"⚠ error: {str(err)[:120]}")
         return None
@@ -487,6 +535,14 @@ async def _execute_task_fallback(
         from app.sandbox.permissions import PermissionChecker
         from app.web_tools import build_web_tools
         checker = PermissionChecker.from_db(db, task.agent_id)
+        if checker.allowed("shell", "execute_commands"):
+            from app.shell_tools import build_shell_tools
+            shell_perms = {
+                "execute_commands": True,
+                "allow_read_only_commands": checker.allowed("shell", "allow_readonly"),
+                "allow_write_impacting_commands": checker.allowed("shell", "allow_write_impact"),
+            }
+            tools += build_shell_tools(shell_perms)
         if checker.allowed("web_search", "perform_search"):
             web_perms = {"perform_search": True}
             if checker.allowed("web_search", "open_links"):
@@ -639,6 +695,10 @@ def run_task_in_sandbox(
         available_tools = ["list_directory", "read_file"]
         if task.tool_usage_mode == "allowed":
             available_tools += ["write_file"]
+
+    # Add shell tools if agent has execute_commands permission
+    if checker.allowed("shell", "execute_commands"):
+        available_tools.append("shell_exec")
 
     # Add web search if agent has perform_search permission
     if checker.allowed("web_search", "perform_search"):
