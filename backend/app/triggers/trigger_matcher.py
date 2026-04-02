@@ -20,10 +20,42 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger("triggers.matcher")
+
+# ── Internal sandbox artifact filtering ──────────────────────────────────────
+# These patterns match paths that are created by the backend/sandbox itself
+# and should never trigger user-defined filesystem schedules.
+
+# Control files written by the sandbox runner
+_INTERNAL_FILES = {".task_input.json", ".task_output.json", "run.log"}
+
+# Directory name patterns for internal run workspaces
+# Matches: "475-task1", "runs", "runs/anything", legacy numeric-task dirs
+_INTERNAL_DIR_RE = re.compile(
+    r"(?:^|[\\/])"           # start or path separator
+    r"(?:"
+    r"runs"                  # /runs or /runs/...
+    r"|"
+    r"\d+-task\d+"           # e.g. 475-task1, 123-task2
+    r")"
+    r"(?:[\\/]|$)"           # followed by separator or end
+)
+
+
+def _is_internal_path(path_str: str) -> bool:
+    """Return True if the path looks like a backend/sandbox internal artifact."""
+    path = Path(path_str)
+    # Reject known control filenames
+    if path.name in _INTERNAL_FILES:
+        return True
+    # Reject paths that contain internal run directory patterns
+    if _INTERNAL_DIR_RE.search(path_str.replace("\\", "/")):
+        return True
+    return False
 
 # Map watchdog event class names → our simple event type strings
 _EVENT_TYPE_MAP = {
@@ -57,6 +89,13 @@ def matches(event, config: dict) -> tuple[bool, str]:
     if not config.get("enabled", True):
         return False, "trigger disabled"
 
+    # ── Internal sandbox artifact filter ─────────────────────────────────────
+    # Reject events on paths created by the backend/sandbox itself so they
+    # never re-trigger user schedules.
+    raw_path = getattr(event, "dest_path", None) or getattr(event, "src_path", "")
+    if _is_internal_path(raw_path):
+        return False, f"internal sandbox path ignored: {raw_path}"
+
     # ── Event type check ──────────────────────────────────────────────────────
     allowed_events = config.get("events") or ["created", "modified", "deleted", "moved"]
     evt_type = event_type_str(event)
@@ -73,7 +112,7 @@ def matches(event, config: dict) -> tuple[bool, str]:
 
     # ── Get the relevant path ─────────────────────────────────────────────────
     # For moved events, use dest_path; otherwise use src_path
-    path_str = getattr(event, "dest_path", None) or getattr(event, "src_path", "")
+    path_str = raw_path
     path = Path(path_str)
     filename = path.name
 

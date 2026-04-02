@@ -107,7 +107,7 @@ const emptyForm = {
   // Filesystem trigger config
   fs_watch_path: "", fs_recursive: true, fs_events: ["created", "modified"],
   fs_extension_filter: "", fs_filename_pattern: "", fs_debounce_seconds: 3,
-  fs_enabled: true,
+  fs_enabled: true, fs_target: "both",
 };
 
 export default function SchedulerPage({ onOpenRunHistory }) {
@@ -167,6 +167,7 @@ export default function SchedulerPage({ onOpenRunHistory }) {
       fs_filename_pattern:  sc.trigger_config?.filename_pattern || "",
       fs_debounce_seconds:  sc.trigger_config?.debounce_seconds ?? 3,
       fs_enabled:           sc.trigger_config?.enabled ?? true,
+      fs_target:            sc.trigger_config?.target || "both",
     });
     setMsg({ type: "", text: "" });
   };
@@ -216,6 +217,7 @@ export default function SchedulerPage({ onOpenRunHistory }) {
         watch_path:       f.fs_watch_path.trim(),
         recursive:        f.fs_recursive,
         events:           f.fs_events,
+        target:           f.fs_target || "both",
         extension_filter: f.fs_extension_filter
           ? f.fs_extension_filter.split(",").map(e => e.trim()).filter(Boolean)
           : null,
@@ -620,8 +622,8 @@ function FilesystemTriggerConfig({ form, setForm }) {
         </div>
       </div>
 
-      {/* Recursive + Target */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+      {/* Recursive + Target + Enabled */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
         <div>
           <label style={s.label}>Recursive</label>
           <div style={{ display: "flex", gap: 8 }}>
@@ -632,6 +634,24 @@ function FilesystemTriggerConfig({ form, setForm }) {
                 onClick={() => setForm(p => ({ ...p, fs_recursive: v }))}
               >
                 {v ? "Yes (subfolders)" : "No (top level only)"}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label style={s.label}>Target</label>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {[
+              { id: "file",   label: "Files only" },
+              { id: "folder", label: "Folders only" },
+              { id: "both",   label: "Both" },
+            ].map(opt => (
+              <div
+                key={opt.id}
+                style={s.radioChip((form.fs_target || "both") === opt.id)}
+                onClick={() => setForm(p => ({ ...p, fs_target: opt.id }))}
+              >
+                {opt.label}
               </div>
             ))}
           </div>
@@ -698,6 +718,7 @@ function FilesystemTriggerConfig({ form, setForm }) {
         <div style={{ padding: "10px 14px", background: "#0f1117", borderRadius: 8, border: "1px solid #2d3148", fontSize: 12, color: "#64748b", marginTop: 8 }}>
           Watching <span style={{ color: "#818cf8" }}>{form.fs_watch_path}</span>
           {form.fs_recursive ? " (recursive)" : " (top level)"}
+          {" · "}target: <span style={{ color: "#f59e0b" }}>{form.fs_target || "both"}</span>
           {" · "}events: <span style={{ color: "#22d3ee" }}>{(form.fs_events || []).join(", ") || "none"}</span>
           {form.fs_extension_filter ? ` · ext: ${form.fs_extension_filter}` : ""}
           {form.fs_filename_pattern ? ` · pattern: ${form.fs_filename_pattern}` : ""}
