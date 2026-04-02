@@ -42,5 +42,9 @@ celery.conf.update(
             "task": "app.scheduler_tasks.poll_due_schedules",
             "schedule": 60.0,
         },
+        "poll-email-triggers-every-minute": {
+            "task": "app.scheduler_tasks.poll_email_triggers",
+            "schedule": 60.0,
+        },
     },
 )

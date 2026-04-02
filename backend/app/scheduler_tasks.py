@@ -186,3 +186,123 @@ def poll_due_schedules():
         return {"fired": fired, "count": len(fired)}
     finally:
         db.close()
+
+
+@celery.task(name="app.scheduler_tasks.poll_email_triggers")
+def poll_email_triggers():
+    """
+    Runs every 60s via Celery Beat.
+    For each active email_imap schedule whose poll interval has elapsed,
+    connects to IMAP, finds matching new messages, and fires run_schedule.
+    """
+    import logging
+    log = logging.getLogger("scheduler_tasks.email")
+
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        schedules = (
+            db.query(models.Schedule)
+            .filter(
+                models.Schedule.is_active == True,
+                models.Schedule.trigger_type == "email_imap",
+            )
+            .all()
+        )
+
+        for schedule in schedules:
+            config = schedule.trigger_config or {}
+            if not config.get("enabled", True):
+                continue
+
+            # Respect per-schedule poll interval (default 5 min)
+            poll_minutes = int(config.get("poll_interval_minutes", 5))
+            if schedule.next_run_at and schedule.next_run_at > now:
+                continue  # not due yet
+
+            _poll_one_email_schedule(schedule, config, db, log)
+
+            # Advance next_run_at
+            from datetime import timedelta
+            schedule.next_run_at = now + timedelta(minutes=poll_minutes)
+            db.commit()
+
+    finally:
+        db.close()
+
+
+def _poll_one_email_schedule(schedule, config: dict, db, log) -> None:
+    """Poll one email_imap schedule. Writes TriggerLog rows and fires workflows."""
+    from app.crypto import decrypt
+    from app.triggers.email_poller import poll_mailbox
+
+    schedule_id = schedule.id
+
+    # Decrypt password before connecting
+    raw_config = dict(config)
+    raw_config["password"] = decrypt(config.get("password", ""))
+
+    try:
+        matched_count = 0
+        for msg_meta in poll_mailbox(raw_config):
+            uid     = msg_meta["uid"]
+            sender  = msg_meta["sender"][:500] if msg_meta["sender"] else None
+            subject = msg_meta["subject"][:1000] if msg_meta["subject"] else None
+
+            # Deduplication — skip if we've already processed this UID
+            existing = (
+                db.query(models.EmailTriggerState)
+                .filter(
+                    models.EmailTriggerState.schedule_id == schedule_id,
+                    models.EmailTriggerState.message_uid == uid,
+                )
+                .first()
+            )
+            if existing:
+                continue
+
+            # Mark as seen
+            db.add(models.EmailTriggerState(
+                schedule_id=schedule_id,
+                message_uid=uid,
+                sender=sender,
+                subject=subject,
+            ))
+
+            # Write trigger log
+            notes = f"uid={uid} from={sender} subject={subject}"
+            db.add(models.TriggerLog(
+                schedule_id=schedule_id,
+                event_type="email",
+                file_path=None,
+                matched=True,
+                debounced=False,
+                workflow_fired=True,
+                notes=notes[:500] if notes else None,
+            ))
+            db.commit()
+
+            # Fire workflow
+            run_schedule.delay(schedule_id, "email_imap")
+            matched_count += 1
+            log.info(f"[email] schedule={schedule_id} fired for uid={uid} subject={subject!r}")
+
+        if matched_count == 0:
+            log.debug(f"[email] schedule={schedule_id} polled — no new matches")
+
+    except Exception as e:
+        log.error(f"[email] schedule={schedule_id} poll error: {e}")
+        # Write a failed trigger log so the user can see the error in the UI
+        try:
+            db.add(models.TriggerLog(
+                schedule_id=schedule_id,
+                event_type="email",
+                file_path=None,
+                matched=False,
+                debounced=False,
+                workflow_fired=False,
+                notes=f"poll error: {str(e)[:450]}",
+            ))
+            db.commit()
+        except Exception:
+            pass

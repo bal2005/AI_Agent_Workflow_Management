@@ -250,6 +250,23 @@ class ScheduleTaskRun(Base):
     task = relationship("Task")
 
 
+class EmailTriggerState(Base):
+    """
+    Tracks IMAP message UIDs that have already triggered a workflow run.
+    One row per (schedule, message) — the unique constraint prevents double-firing.
+    """
+    __tablename__ = "email_trigger_state"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    schedule_id = Column(Integer, ForeignKey("schedules.id"), nullable=False)
+    message_uid = Column(String(200), nullable=False)   # IMAP UID (string)
+    sender      = Column(String(500), nullable=True)
+    subject     = Column(String(1000), nullable=True)
+    seen_at     = Column(DateTime(timezone=True), server_default=func.now())
+
+    schedule = relationship("Schedule")
+
+
 class TriggerLog(Base):
     """Records every filesystem event detected by the watchdog listener."""
     __tablename__ = "trigger_logs"

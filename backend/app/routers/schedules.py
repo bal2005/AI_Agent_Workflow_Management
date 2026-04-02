@@ -33,6 +33,32 @@ def _reload_trigger(schedule_id: int, deleted: bool = False) -> None:
         logging.getLogger(__name__).warning(f"Trigger reload failed for schedule {schedule_id}: {e}")
 
 
+def _encrypt_trigger_config(trigger_type: str, config: dict | None) -> dict | None:
+    """Encrypt sensitive fields in trigger_config before storing."""
+    if not config or trigger_type != "email_imap":
+        return config
+    result = dict(config)
+    raw_password = result.get("password", "")
+    if raw_password:
+        try:
+            from app.crypto import encrypt, decrypt
+            from cryptography.fernet import InvalidToken
+            # Only encrypt if not already encrypted (idempotent on update)
+            try:
+                decrypt(raw_password)
+                # If decrypt succeeds without error it's already a Fernet token — leave it
+                # But we can't distinguish plaintext from token reliably, so always re-encrypt
+                # plaintext that doesn't look like a Fernet token (starts with "gAAAAA")
+            except Exception:
+                pass
+            if not raw_password.startswith("gAAAAA"):
+                result["password"] = encrypt(raw_password)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Password encryption failed: {e}")
+    return result
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _load(schedule_id: int, db: Session) -> models.Schedule:
@@ -145,7 +171,7 @@ def create_schedule(payload: schemas.ScheduleCreate, db: Session = Depends(get_d
         cron_expression=payload.cron_expression,
         is_active=payload.is_active,
         workflow_json=payload.workflow_json,
-        trigger_config=payload.trigger_config,
+        trigger_config=_encrypt_trigger_config(payload.trigger_type, payload.trigger_config),
     )
     db.add(schedule)
     db.flush()
@@ -209,6 +235,8 @@ def update_schedule(schedule_id: int, payload: schemas.ScheduleUpdate, db: Sessi
     for k, v in data.items():
         if k == "workflow_json" and v is None and schedule.workflow_json is not None:
             continue
+        if k == "trigger_config":
+            v = _encrypt_trigger_config(data.get("trigger_type") or schedule.trigger_type, v)
         setattr(schedule, k, v)
 
     if task_ids is not None:
@@ -385,3 +413,111 @@ def get_trigger_logs(schedule_id: int, limit: int = 50, db: Session = Depends(ge
         }
         for l in logs
     ]
+
+
+@router.get("/{schedule_id}/email-trigger-logs")
+def get_email_trigger_logs(schedule_id: int, limit: int = 50, db: Session = Depends(get_db)):
+    """Return recent email trigger state rows (processed messages) for a schedule."""
+    from app import models as m
+    rows = (
+        db.query(m.EmailTriggerState)
+        .filter(m.EmailTriggerState.schedule_id == schedule_id)
+        .order_by(m.EmailTriggerState.seen_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id":          r.id,
+            "message_uid": r.message_uid,
+            "sender":      r.sender,
+            "subject":     r.subject,
+            "seen_at":     r.seen_at.isoformat() if r.seen_at else None,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/test-imap")
+def test_imap(payload: dict, db: Session = Depends(get_db)):
+    """
+    Test IMAP connectivity from an unsaved config dict.
+    Accepts the same shape as trigger_config for email_imap.
+    Password is treated as plaintext here (not yet stored/encrypted).
+    """
+    from app.crypto import decrypt
+    import imaplib, ssl as _ssl
+
+    host     = (payload.get("host") or "").strip()
+    port     = int(payload.get("port") or 993)
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+    use_ssl  = payload.get("use_ssl", True)
+    mailbox  = (payload.get("mailbox") or "INBOX").strip() or "INBOX"
+
+    if not host or not username:
+        return {"ok": False, "message": "host and username are required"}
+
+    try:
+        if use_ssl:
+            ctx = _ssl.create_default_context()
+            conn = imaplib.IMAP4_SSL(host, port, ssl_context=ctx)
+        else:
+            conn = imaplib.IMAP4(host, port)
+            conn.starttls()
+        conn.login(username, password)
+        status, data = conn.select(mailbox, readonly=True)
+        msg_count = int(data[0]) if data and data[0] else 0
+        conn.logout()
+        return {"ok": True, "message": f"Connected to {host}. {msg_count} message(s) in {mailbox}."}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@router.patch("/{schedule_id}/trigger-enabled")
+def set_trigger_enabled(schedule_id: int, payload: dict, db: Session = Depends(get_db)):
+    """Enable or pause the trigger for a schedule without a full update."""
+    schedule = _load(schedule_id, db)
+    config = dict(schedule.trigger_config or {})
+    config["enabled"] = bool(payload.get("enabled", True))
+    schedule.trigger_config = config
+    db.commit()
+    _reload_trigger(schedule_id)
+    return {"ok": True, "enabled": config["enabled"]}
+
+
+@router.post("/{schedule_id}/test-email-connection")
+def test_email_connection(schedule_id: int, db: Session = Depends(get_db)):
+    """
+    Test IMAP connectivity for an email_imap schedule.
+    Returns success/error without triggering any workflow.
+    """
+    schedule = _load(schedule_id, db)
+    config = schedule.trigger_config or {}
+    if schedule.trigger_type != "email_imap":
+        raise HTTPException(status_code=400, detail="Schedule is not email_imap type")
+
+    from app.crypto import decrypt
+    import imaplib, ssl as _ssl
+
+    host     = config.get("host", "").strip()
+    port     = int(config.get("port", 993))
+    username = config.get("username", "").strip()
+    password = decrypt(config.get("password", ""))
+    use_ssl  = config.get("use_ssl", True)
+    mailbox  = config.get("mailbox", "INBOX")
+
+    try:
+        if use_ssl:
+            ctx = _ssl.create_default_context()
+            conn = imaplib.IMAP4_SSL(host, port, ssl_context=ctx)
+        else:
+            conn = imaplib.IMAP4(host, port)
+            conn.starttls()
+        conn.login(username, password)
+        status, data = conn.select(mailbox, readonly=True)
+        msg_count = int(data[0]) if data and data[0] else 0
+        conn.logout()
+        return {"ok": True, "message": f"Connected. {msg_count} message(s) in {mailbox}."}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}

@@ -55,6 +55,12 @@ export const updateSchedule = (id, payload) => api.patch(`/schedules/${id}`, pay
 export const deleteSchedule = (id) => api.delete(`/schedules/${id}`);
 export const runScheduleNow = (id) => api.post(`/schedules/${id}/run-now`).then(r => r.data);
 export const fetchScheduleRuns = (id, limit = 20) => api.get(`/schedules/${id}/runs`, { params: { limit } }).then(r => r.data);
+export const fetchScheduleTriggerStatus = (id) => api.get(`/schedules/${id}/trigger-status`).then(r => r.data);
+export const fetchScheduleTriggerLogs = (id, limit = 20) => api.get(`/schedules/${id}/trigger-logs`, { params: { limit } }).then(r => r.data);
+export const fetchEmailTriggerLogs = (id, limit = 20) => api.get(`/schedules/${id}/email-trigger-logs`, { params: { limit } }).then(r => r.data);
+export const testEmailConnection = (id) => api.post(`/schedules/${id}/test-email-connection`).then(r => r.data);
+export const setScheduleTriggerEnabled = (id, enabled) => api.patch(`/schedules/${id}/trigger-enabled`, { enabled }).then(r => r.data);
+export const testImapTrigger = (payload) => api.post("/schedules/test-imap", payload).then(r => r.data);
 export const fetchRun = (runId) => api.get(`/schedules/runs/${runId}`).then(r => r.data);
 export const fetchAllRuns = (params = {}) => api.get("/schedules/all-runs", { params }).then(r => r.data);
 

@@ -12,6 +12,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   fetchSchedules, createSchedule, updateSchedule, deleteSchedule,
   runScheduleNow, fetchScheduleRuns, fetchTasks,
+  fetchEmailTriggerLogs, testEmailConnection, testImapTrigger,
 } from "../api";
 import WorkflowBuilder from "./WorkflowBuilder";
 
@@ -31,8 +32,8 @@ const s = {
   schedMeta:    { fontSize: 11, color: "#475569" },
   triggerBadge: (t) => ({
     display: "inline-block", padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 700,
-    background: t === "cron" ? "#1e3a5f" : t === "interval" ? "#1a2e1a" : "#2d2d2d",
-    color: t === "cron" ? "#60a5fa" : t === "interval" ? "#4ade80" : "#94a3b8",
+    background: t === "cron" ? "#1e3a5f" : t === "interval" ? "#1a2e1a" : t === "filesystem" ? "#1a2a1a" : t === "email_imap" ? "#1f1a2e" : "#2d2d2d",
+    color:      t === "cron" ? "#60a5fa" : t === "interval" ? "#4ade80" : t === "filesystem" ? "#86efac" : t === "email_imap" ? "#a78bfa" : "#94a3b8",
   }),
   right:        { flex: 1, overflowY: "auto", padding: "28px 36px" },
   pageTitle:    { fontSize: 22, fontWeight: 700, color: "#f8fafc", marginBottom: 4 },
@@ -93,10 +94,11 @@ const s = {
 };
 
 const TRIGGER_TYPES = [
-  { id: "manual",     label: "Manual",     desc: "Run on demand only" },
-  { id: "interval",   label: "Interval",   desc: "Every X minutes/hours/days" },
-  { id: "cron",       label: "Cron",       desc: "Cron expression" },
+  { id: "manual",     label: "Manual",        desc: "Run on demand only" },
+  { id: "interval",   label: "Interval",      desc: "Every X minutes/hours/days" },
+  { id: "cron",       label: "Cron",          desc: "Cron expression" },
   { id: "filesystem", label: "📁 File Watch", desc: "Trigger on file/folder changes" },
+  { id: "email_imap", label: "📧 Email IMAP", desc: "Trigger on incoming email" },
 ];
 const INTERVAL_UNITS = ["minutes", "hours", "days"];
 
@@ -108,6 +110,13 @@ const emptyForm = {
   fs_watch_path: "", fs_recursive: true, fs_events: ["created", "modified"],
   fs_extension_filter: "", fs_filename_pattern: "", fs_debounce_seconds: 3,
   fs_enabled: true, fs_target: "both",
+  // Email IMAP trigger config
+  em_host: "", em_port: 993, em_use_ssl: true,
+  em_username: "", em_password: "",
+  em_mailbox: "INBOX", em_poll_interval_minutes: 5,
+  em_filter_sender: "", em_filter_subject: "", em_filter_body: "",
+  em_unread_only: true, em_has_attachment: false,
+  em_attachment_extensions: "", em_enabled: true,
 };
 
 export default function SchedulerPage({ onOpenRunHistory }) {
@@ -168,6 +177,21 @@ export default function SchedulerPage({ onOpenRunHistory }) {
       fs_debounce_seconds:  sc.trigger_config?.debounce_seconds ?? 3,
       fs_enabled:           sc.trigger_config?.enabled ?? true,
       fs_target:            sc.trigger_config?.target || "both",
+      // Email IMAP trigger config
+      em_host:                    sc.trigger_config?.host || "",
+      em_port:                    sc.trigger_config?.port ?? 993,
+      em_use_ssl:                 sc.trigger_config?.use_ssl ?? true,
+      em_username:                sc.trigger_config?.username || "",
+      em_password:                "",   // never pre-fill password from server
+      em_mailbox:                 sc.trigger_config?.mailbox || "INBOX",
+      em_poll_interval_minutes:   sc.trigger_config?.poll_interval_minutes ?? 5,
+      em_filter_sender:           sc.trigger_config?.filter_sender || "",
+      em_filter_subject:          sc.trigger_config?.filter_subject || "",
+      em_filter_body:             sc.trigger_config?.filter_body || "",
+      em_unread_only:             sc.trigger_config?.unread_only ?? true,
+      em_has_attachment:          sc.trigger_config?.has_attachment ?? false,
+      em_attachment_extensions:   (sc.trigger_config?.attachment_extensions || []).join(", "),
+      em_enabled:                 sc.trigger_config?.enabled ?? true,
     });
     setMsg({ type: "", text: "" });
   };
@@ -224,6 +248,24 @@ export default function SchedulerPage({ onOpenRunHistory }) {
         filename_pattern: f.fs_filename_pattern.trim() || null,
         debounce_seconds: Number(f.fs_debounce_seconds) || 3,
         enabled:          f.fs_enabled,
+      } : f.trigger_type === "email_imap" ? {
+        host:                    f.em_host.trim(),
+        port:                    Number(f.em_port) || 993,
+        use_ssl:                 f.em_use_ssl,
+        username:                f.em_username.trim(),
+        // Only send password if user typed one; empty string = keep existing encrypted value
+        ...(f.em_password ? { password: f.em_password } : {}),
+        mailbox:                 f.em_mailbox.trim() || "INBOX",
+        poll_interval_minutes:   Number(f.em_poll_interval_minutes) || 5,
+        filter_sender:           f.em_filter_sender.trim() || null,
+        filter_subject:          f.em_filter_subject.trim() || null,
+        filter_body:             f.em_filter_body.trim() || null,
+        unread_only:             f.em_unread_only,
+        has_attachment:          f.em_has_attachment,
+        attachment_extensions:   f.em_attachment_extensions
+          ? f.em_attachment_extensions.split(",").map(e => e.trim()).filter(Boolean)
+          : [],
+        enabled:                 f.em_enabled,
       } : null,
     };
     console.log("[WF] buildPayload workflow_json:", p.workflow_json);
@@ -367,7 +409,7 @@ export default function SchedulerPage({ onOpenRunHistory }) {
             </div>
 
             {/* ── 2. Trigger Config ── */}
-            <TriggerSection form={form} setForm={setForm} f={f} />
+            <TriggerSection form={form} setForm={setForm} f={f} scheduleId={selected?.id} />
 
             {/* ── 3. Workflow Builder entry point ── */}
       <WorkflowSection
@@ -437,7 +479,7 @@ function EmptyState({ onNew }) {
   );
 }
 
-function TriggerSection({ form, setForm, f }) {
+function TriggerSection({ form, setForm, f, scheduleId }) {
   return (
     <div style={s.section}>
       <div style={s.secTitle}>Trigger Configuration</div>
@@ -486,6 +528,10 @@ function TriggerSection({ form, setForm, f }) {
 
       {form.trigger_type === "filesystem" && (
         <FilesystemTriggerConfig form={form} setForm={setForm} />
+      )}
+
+      {form.trigger_type === "email_imap" && (
+        <EmailTriggerConfig form={form} setForm={setForm} scheduleId={scheduleId} />
       )}
     </div>
   );
@@ -723,6 +769,226 @@ function FilesystemTriggerConfig({ form, setForm }) {
           {form.fs_extension_filter ? ` · ext: ${form.fs_extension_filter}` : ""}
           {form.fs_filename_pattern ? ` · pattern: ${form.fs_filename_pattern}` : ""}
           {" · "}debounce: {form.fs_debounce_seconds}s
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Email IMAP Trigger Configuration ─────────────────────────────────────────
+
+function EmailTriggerConfig({ form, setForm, scheduleId }) {
+  const [testStatus, setTestStatus]   = useState(null);   // null | {ok, message}
+  const [testing, setTesting]         = useState(false);
+  const [logs, setLogs]               = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [showLogs, setShowLogs]       = useState(false);
+
+  const set = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }));
+  const setBool = (key, val) => setForm(p => ({ ...p, [key]: val }));
+
+  // Test connection — uses saved schedule if id exists, otherwise raw form values
+  const handleTest = async () => {
+    setTesting(true); setTestStatus(null);
+    try {
+      let result;
+      if (scheduleId) {
+        result = await testEmailConnection(scheduleId);
+      } else {
+        result = await testImapTrigger({
+          host:     form.em_host,
+          port:     Number(form.em_port) || 993,
+          use_ssl:  form.em_use_ssl,
+          username: form.em_username,
+          password: form.em_password,
+          mailbox:  form.em_mailbox || "INBOX",
+        });
+      }
+      setTestStatus(result);
+    } catch (e) {
+      setTestStatus({ ok: false, message: e.response?.data?.detail || String(e) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleLoadLogs = async () => {
+    if (!scheduleId) return;
+    setLogsLoading(true);
+    try {
+      const data = await fetchEmailTriggerLogs(scheduleId, 20);
+      setLogs(data);
+      setShowLogs(true);
+    } catch (e) {
+      setLogs([]);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 16 }}>
+
+      {/* ── Connection ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div>
+          <label style={s.label}>IMAP Host *</label>
+          <input style={s.input} placeholder="imap.gmail.com" value={form.em_host || ""} onChange={set("em_host")} />
+        </div>
+        <div>
+          <label style={s.label}>Port</label>
+          <input style={s.input} type="number" placeholder="993" value={form.em_port ?? 993} onChange={set("em_port")} />
+        </div>
+        <div>
+          <label style={s.label}>SSL</label>
+          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+            {[true, false].map(v => (
+              <div key={String(v)} style={s.radioChip(form.em_use_ssl === v)} onClick={() => setBool("em_use_ssl", v)}>
+                {v ? "SSL/TLS" : "STARTTLS"}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div>
+          <label style={s.label}>Email / Username *</label>
+          <input style={s.input} placeholder="you@gmail.com" value={form.em_username || ""} onChange={set("em_username")} autoComplete="off" />
+        </div>
+        <div>
+          <label style={s.label}>Password / App Password *</label>
+          <input style={s.input} type="password" placeholder={scheduleId ? "Leave blank to keep saved" : "App password"} value={form.em_password || ""} onChange={set("em_password")} autoComplete="new-password" />
+          <div style={s.hint}>Stored encrypted. Use an app-specific password for Gmail/Outlook.</div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div>
+          <label style={s.label}>Mailbox</label>
+          <input style={s.input} placeholder="INBOX" value={form.em_mailbox || "INBOX"} onChange={set("em_mailbox")} />
+        </div>
+        <div>
+          <label style={s.label}>Poll Interval (minutes)</label>
+          <input style={s.input} type="number" min="1" max="1440" placeholder="5" value={form.em_poll_interval_minutes ?? 5} onChange={set("em_poll_interval_minutes")} />
+          <div style={s.hint}>How often to check for new emails. Min 1 min.</div>
+        </div>
+      </div>
+
+      {/* ── Test connection ── */}
+      <div style={{ marginBottom: 16 }}>
+        <button
+          style={{ padding: "7px 16px", borderRadius: 8, border: "1px solid #2d3148", background: "#0f1117", color: "#94a3b8", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+          onClick={handleTest}
+          disabled={testing}
+        >
+          {testing ? "Testing…" : "🔌 Test Connection"}
+        </button>
+        {testStatus && (
+          <span style={{ marginLeft: 12, fontSize: 12, color: testStatus.ok ? "#4ade80" : "#f87171" }}>
+            {testStatus.ok ? "✓ " : "✗ "}{testStatus.message}
+          </span>
+        )}
+      </div>
+
+      {/* ── Filters ── */}
+      <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "#7c85a2", marginBottom: 10 }}>Email Filters (all optional)</div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div>
+          <label style={s.label}>Sender contains</label>
+          <input style={s.input} placeholder="boss@company.com" value={form.em_filter_sender || ""} onChange={set("em_filter_sender")} />
+        </div>
+        <div>
+          <label style={s.label}>Subject contains</label>
+          <input style={s.input} placeholder="Invoice" value={form.em_filter_subject || ""} onChange={set("em_filter_subject")} />
+        </div>
+      </div>
+
+      <div style={s.fieldGroup}>
+        <label style={s.label}>Body contains</label>
+        <input style={s.input} placeholder="urgent" value={form.em_filter_body || ""} onChange={set("em_filter_body")} />
+        <div style={s.hint}>Fetches full message body to check — slightly slower.</div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div>
+          <label style={s.label}>Unread only</label>
+          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+            {[true, false].map(v => (
+              <div key={String(v)} style={s.radioChip(form.em_unread_only === v)} onClick={() => setBool("em_unread_only", v)}>
+                {v ? "Yes" : "No"}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label style={s.label}>Has attachment</label>
+          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+            {[false, true].map(v => (
+              <div key={String(v)} style={s.radioChip(form.em_has_attachment === v)} onClick={() => setBool("em_has_attachment", v)}>
+                {v ? "Required" : "Any"}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label style={s.label}>Enabled</label>
+          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+            {[true, false].map(v => (
+              <div key={String(v)} style={s.radioChip(form.em_enabled === v)} onClick={() => setBool("em_enabled", v)}>
+                {v ? "Active" : "Paused"}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={s.fieldGroup}>
+        <label style={s.label}>Attachment extensions (optional)</label>
+        <input style={s.input} placeholder=".pdf, .csv, .xlsx" value={form.em_attachment_extensions || ""} onChange={set("em_attachment_extensions")} />
+        <div style={s.hint}>Comma-separated. Only fires if attachment matches. Leave blank for any.</div>
+      </div>
+
+      {/* ── Processed emails log ── */}
+      {scheduleId && (
+        <div style={{ marginTop: 8 }}>
+          <button
+            style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid #2d3148", background: "#0f1117", color: "#64748b", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+            onClick={handleLoadLogs}
+            disabled={logsLoading}
+          >
+            {logsLoading ? "Loading…" : "📬 Show Processed Emails"}
+          </button>
+
+          {showLogs && (
+            <div style={{ marginTop: 10 }}>
+              {logs.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#475569" }}>No emails processed yet.</div>
+              ) : (
+                <table style={s.table}>
+                  <thead>
+                    <tr>
+                      <th style={s.th}>UID</th>
+                      <th style={s.th}>From</th>
+                      <th style={s.th}>Subject</th>
+                      <th style={s.th}>Seen at</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {logs.map(l => (
+                      <tr key={l.id}>
+                        <td style={s.td}>{l.message_uid}</td>
+                        <td style={s.td}>{l.sender || "—"}</td>
+                        <td style={s.td}>{l.subject || "—"}</td>
+                        <td style={s.td}>{l.seen_at ? new Date(l.seen_at).toLocaleString() : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
