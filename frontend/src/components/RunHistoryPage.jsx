@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { fetchAllRuns, fetchSchedules } from "../api";
+import { fetchAllRuns, fetchSchedules, fetchDashboardSummary } from "../api";
 
 const s = {
   page:         { display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", background: "#0f1117", color: "#e2e8f0", fontFamily: "Inter, sans-serif" },
@@ -21,8 +21,8 @@ const s = {
   }),
   triggerBadge: (t) => ({
     display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700,
-    background: t === "scheduler" ? "#1a2e1a" : "#2d1f3a",
-    color:      t === "scheduler" ? "#4ade80" : "#c084fc",
+    background: t === "scheduler" ? "#1a2e1a" : t === "manual" ? "#2d1f3a" : t === "filesystem" ? "#1a2a1a" : t === "email_imap" ? "#1f1a2e" : "#2d2d2d",
+    color:      t === "scheduler" ? "#4ade80" : t === "manual" ? "#c084fc" : t === "filesystem" ? "#86efac" : t === "email_imap" ? "#a78bfa" : "#94a3b8",
   }),
   detailBtn:    { background: "none", border: "1px solid #2d3148", borderRadius: 6, color: "#6366f1", cursor: "pointer", fontSize: 11, padding: "4px 10px", fontWeight: 600 },
   emptyMsg:     { color: "#475569", fontSize: 13, padding: "40px 0", textAlign: "center" },
@@ -57,22 +57,25 @@ const dur = (s, e) => {
 export default function RunHistoryPage() {
   const [runs, setRuns]           = useState([]);
   const [schedules, setSchedules] = useState([]);
+  const [stats, setStats]         = useState(null);   // real DB-wide totals
   const [loading, setLoading]     = useState(true);
   const [modalRun, setModalRun]   = useState(null);
   // filters
-  const [filterStatus, setFilterStatus]   = useState("");
-  const [filterTrigger, setFilterTrigger] = useState("");
+  const [filterStatus, setFilterStatus]     = useState("");
+  const [filterTrigger, setFilterTrigger]   = useState("");
   const [filterSchedule, setFilterSchedule] = useState("");
-  const [filterSearch, setFilterSearch]   = useState("");
+  const [filterSearch, setFilterSearch]     = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [r, sc] = await Promise.all([
+    const [r, sc, dash] = await Promise.all([
       fetchAllRuns({ limit: 200 }).catch(() => []),
       fetchSchedules().catch(() => []),
+      fetchDashboardSummary().catch(() => null),
     ]);
     setRuns(r);
     setSchedules(sc);
+    setStats(dash);
     setLoading(false);
   }, []);
 
@@ -90,10 +93,19 @@ export default function RunHistoryPage() {
     return true;
   });
 
-  const total   = filtered.length;
-  const success = filtered.filter(r => r.status === "success").length;
-  const failed  = filtered.filter(r => r.status === "failed").length;
-  const running = filtered.filter(r => r.status === "running").length;
+  // ── Summary stats: use real DB-wide totals from dashboard, not the 200-run slice ──
+  const totalRuns   = stats?.total_schedule_runs ?? runs.length;
+  const successRuns = stats?.successful_runs     ?? runs.filter(r => r.status === "success").length;
+  const failedRuns  = stats?.failed_runs         ?? runs.filter(r => r.status === "failed").length;
+  const runningRuns = runs.filter(r => r.status === "running").length;  // live count from fetched slice
+  const pendingRuns = runs.filter(r => r.status === "pending").length;
+  const successRate = stats?.success_rate        ?? null;
+  const avgDur      = stats?.avg_duration_s      ?? null;
+  const runsToday   = stats?.runs_today          ?? null;
+  const runsWeek    = stats?.runs_this_week      ?? null;
+
+  // Filtered table count (for the "showing X results" context)
+  const filteredCount = filtered.length;
 
   return (
     <div style={s.page}>
@@ -123,6 +135,8 @@ export default function RunHistoryPage() {
             <option value="">All Triggers</option>
             <option value="manual">Manual</option>
             <option value="scheduler">Scheduler</option>
+            <option value="filesystem">File Watch</option>
+            <option value="email_imap">Email IMAP</option>
           </select>
           <select style={s.select} value={filterSchedule} onChange={e => setFilterSchedule(e.target.value)}>
             <option value="">All Schedules</option>
@@ -142,13 +156,33 @@ export default function RunHistoryPage() {
       </div>
 
       <div style={s.body}>
-        {/* Summary cards */}
-        <div style={s.cards}>
-          <div style={s.card}><div style={s.cardVal}>{total}</div><div style={s.cardLabel}>Total Runs</div></div>
-          <div style={s.card}><div style={{ ...s.cardVal, color: "#4ade80" }}>{success}</div><div style={s.cardLabel}>Successful</div></div>
-          <div style={s.card}><div style={{ ...s.cardVal, color: "#f87171" }}>{failed}</div><div style={s.cardLabel}>Failed</div></div>
-          <div style={s.card}><div style={{ ...s.cardVal, color: "#60a5fa" }}>{running}</div><div style={s.cardLabel}>Running</div></div>
+        {/* Summary cards — DB-wide totals, not limited to the 200-run page slice */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 12 }}>
+          <div style={s.card}><div style={s.cardVal}>{totalRuns}</div><div style={s.cardLabel}>Total Runs (all time)</div></div>
+          <div style={s.card}><div style={{ ...s.cardVal, color: "#4ade80" }}>{successRuns}</div><div style={s.cardLabel}>Successful</div></div>
+          <div style={s.card}><div style={{ ...s.cardVal, color: "#f87171" }}>{failedRuns}</div><div style={s.cardLabel}>Failed</div></div>
+          <div style={s.card}>
+            <div style={{ ...s.cardVal, color: successRate != null ? (successRate >= 80 ? "#4ade80" : successRate >= 50 ? "#f59e0b" : "#f87171") : "#475569" }}>
+              {successRate != null ? `${successRate}%` : "—"}
+            </div>
+            <div style={s.cardLabel}>Success Rate</div>
+          </div>
         </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 20 }}>
+          <div style={s.card}><div style={{ ...s.cardVal, color: "#60a5fa" }}>{runningRuns}</div><div style={s.cardLabel}>Currently Running</div></div>
+          <div style={s.card}><div style={{ ...s.cardVal, color: "#94a3b8" }}>{pendingRuns}</div><div style={s.cardLabel}>Pending</div></div>
+          <div style={s.card}><div style={{ ...s.cardVal, color: "#a78bfa" }}>{runsToday ?? "—"}</div><div style={s.cardLabel}>Runs Today</div></div>
+          <div style={s.card}>
+            <div style={{ ...s.cardVal, color: "#f59e0b" }}>{avgDur != null ? `${avgDur}s` : "—"}</div>
+            <div style={s.cardLabel}>Avg Task Duration</div>
+          </div>
+        </div>
+        {/* Filtered table context */}
+        {(filterStatus || filterTrigger || filterSchedule || filterSearch) && (
+          <div style={{ fontSize: 12, color: "#475569", marginBottom: 10 }}>
+            Showing {filteredCount} filtered run{filteredCount !== 1 ? "s" : ""} (from last 200 fetched)
+          </div>
+        )}
 
         {/* Table */}
         {loading ? (
@@ -301,11 +335,25 @@ function RunTraceModal({ run, onClose }) {
                 <>
                   <div style={{ ...s.metaLabel, marginTop: 8 }}>Execution Logs</div>
                   <div style={s.logBox}>
-                    {tr.logs.map((line, li) => (
-                      <div key={li} style={{ color: line.startsWith("🔧") ? "#818cf8" : line.startsWith("   →") ? "#475569" : "#94a3b8" }}>
-                        {line}
-                      </div>
-                    ))}
+                    {tr.logs.map((line, li) => {
+                      // Normalize corrupted emoji sequences from DB storage
+                      const clean = line
+                        .replace(/\?\?\?/g, "✅")
+                        .replace(/\?\?\?\?/g, "🔧")
+                        .replace(/â\x9C\x85/g, "✅")
+                        .replace(/ð\x9F\x94\§/g, "🔧");
+                      return (
+                        <div key={li} style={{
+                          color: clean.startsWith("🔧") ? "#818cf8"
+                               : clean.startsWith("⛔") ? "#f87171"
+                               : clean.startsWith("✅") ? "#4ade80"
+                               : clean.startsWith("⚠") ? "#f59e0b"
+                               : "#94a3b8",
+                        }}>
+                          {clean}
+                        </div>
+                      );
+                    })}
                   </div>
                 </>
               )}
