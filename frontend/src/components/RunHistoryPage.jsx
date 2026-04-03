@@ -336,22 +336,25 @@ function RunTraceModal({ run, onClose }) {
                   <div style={{ ...s.metaLabel, marginTop: 8 }}>Execution Logs</div>
                   <div style={s.logBox}>
                     {tr.logs.map((line, li) => {
-                      // Normalize corrupted emoji sequences from DB storage
                       const clean = line
                         .replace(/\?\?\?/g, "✅")
-                        .replace(/\?\?\?\?/g, "🔧")
-                        .replace(/â\x9C\x85/g, "✅")
-                        .replace(/ð\x9F\x94\§/g, "🔧");
+                        .replace(/\?\?\?\?/g, "🔧");
+                      // Detailed run.log format: "2026-04-03 11:06:08,353 [INFO] Executing tool: ..."
+                      const isInfo    = clean.includes("[INFO]");
+                      const isWarning = clean.includes("[WARNING]") || clean.includes("[WARN]");
+                      const isError   = clean.includes("[ERROR]");
+                      const isExec    = clean.includes("Executing tool:");
+                      const isResult  = clean.includes("Tool result [");
+                      const color =
+                        clean.startsWith("🔧") || isExec  ? "#818cf8"
+                        : clean.startsWith("✅")           ? "#4ade80"
+                        : clean.startsWith("⛔") || isError ? "#f87171"
+                        : clean.startsWith("⚠") || isWarning ? "#f59e0b"
+                        : isResult                         ? "#22d3ee"
+                        : isInfo                           ? "#94a3b8"
+                        : "#64748b";
                       return (
-                        <div key={li} style={{
-                          color: clean.startsWith("🔧") ? "#818cf8"
-                               : clean.startsWith("⛔") ? "#f87171"
-                               : clean.startsWith("✅") ? "#4ade80"
-                               : clean.startsWith("⚠") ? "#f59e0b"
-                               : "#94a3b8",
-                        }}>
-                          {clean}
-                        </div>
+                        <div key={li} style={{ color, marginBottom: 1 }}>{clean}</div>
                       );
                     })}
                   </div>

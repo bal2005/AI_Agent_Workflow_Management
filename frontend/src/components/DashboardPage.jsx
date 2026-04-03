@@ -274,12 +274,13 @@ function TaskLogBlock({ tr, index, expanded: initExpanded = false }) {
               <div style={s.logBox}>
                 {tr.logs.map((line, li) => (
                   <div key={li} style={{
-                    color: line.startsWith("🔧") ? "#818cf8"
-                         : line.startsWith("⛔") || line.startsWith("PERMISSION") ? "#f87171"
+                    color: line.startsWith("🔧") || line.includes("Executing tool:") ? "#818cf8"
+                         : line.startsWith("⛔") || line.includes("[ERROR]") ? "#f87171"
                          : line.startsWith("✅") ? "#4ade80"
-                         : line.startsWith("⚠") ? "#f59e0b"
+                         : line.startsWith("⚠") || line.includes("[WARNING]") ? "#f59e0b"
+                         : line.includes("Tool result [") ? "#22d3ee"
                          : "#94a3b8",
-                    marginBottom: 2,
+                    marginBottom: 1,
                   }}>
                     {line}
                   </div>

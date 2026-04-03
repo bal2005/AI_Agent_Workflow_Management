@@ -765,13 +765,28 @@ def run_task_in_sandbox(
     sandbox = SandboxManager(run_id=f"{run_id}-task{task.id}")
     result  = sandbox.run(task_payload, network_access=needs_network)
 
+    # Read the detailed run.log from the run workspace
+    # agent_runner writes run.log to /workspace inside the container = run_workspace on host
+    run_log_path = run_workspace / "run.log"
+    run_log_lines: list[str] = []
+    if run_log_path.exists():
+        try:
+            run_log_lines = [
+                line for line in run_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                if line.strip()
+            ][:500]
+        except Exception:
+            pass
+
+    logs = run_log_lines if run_log_lines else result.get("tool_usage", [])
+
     # Normalise result shape to match run_task_in_workflow output
     return {
         "success":          result.get("success", False),
         "final_text":       result.get("final_text", result.get("error", "")),
         "structured_output": {},
         "tool_usage":       result.get("tool_usage", []),
-        "logs":             result.get("tool_usage", []),
+        "logs":             logs,
         "metadata": {
             "model":      cfg.model_name,
             "provider":   cfg.provider,
