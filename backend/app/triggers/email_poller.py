@@ -150,7 +150,9 @@ def poll_mailbox(config: dict) -> Generator[dict, None, None]:
 
     try:
         conn.login(username, password)
-        conn.select(mailbox, readonly=False)
+        # readonly=True — don't auto-mark messages as SEEN just by fetching them.
+        # The dedup table (EmailTriggerState) is the source of truth for what's processed.
+        conn.select(mailbox, readonly=True)
 
         criteria = _build_search_criteria(config)
         log.debug(f"[email_poller] SEARCH {criteria} on {host}/{mailbox}")
@@ -173,9 +175,9 @@ def poll_mailbox(config: dict) -> Generator[dict, None, None]:
         for uid_bytes in uids:
             uid = uid_bytes.decode()
 
-            # Fetch headers (and body only if body filter is set)
-            fetch_parts = "(RFC822)" if filter_body else "(RFC822.HEADER BODYSTRUCTURE)"
-            status2, msg_data = conn.uid("FETCH", uid, fetch_parts)
+            # Always fetch full RFC822 — more reliable across IMAP servers
+            # (RFC822.HEADER can miss headers on some Gmail configurations)
+            status2, msg_data = conn.uid("FETCH", uid, "(RFC822)")
             if status2 != "OK" or not msg_data or not msg_data[0]:
                 continue
 

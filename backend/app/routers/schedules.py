@@ -91,6 +91,10 @@ def _compute_next_run(schedule: models.Schedule) -> datetime | None:
             return croniter(schedule.cron_expression, now).get_next(datetime)
         except Exception:
             pass
+    if schedule.trigger_type == "email_imap":
+        # Set next_run_at to now so it polls immediately on first beat tick
+        poll_minutes = int((schedule.trigger_config or {}).get("poll_interval_minutes", 1))
+        return now + timedelta(minutes=poll_minutes)
     return None
 
 

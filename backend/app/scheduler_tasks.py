@@ -171,7 +171,7 @@ def poll_due_schedules():
             db.query(models.Schedule)
             .filter(
                 models.Schedule.is_active == True,
-                models.Schedule.trigger_type != "manual",
+                models.Schedule.trigger_type.notin_(["manual", "filesystem", "email_imap"]),
                 models.Schedule.next_run_at != None,
                 models.Schedule.next_run_at <= now,
             )
