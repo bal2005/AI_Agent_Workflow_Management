@@ -409,7 +409,7 @@ export default function SchedulerPage({ onOpenRunHistory }) {
             </div>
 
             {/* ── 2. Trigger Config ── */}
-            <TriggerSection form={form} setForm={setForm} f={f} scheduleId={selected?.id} />
+            <TriggerSection form={form} setForm={setFormAndRef} f={f} scheduleId={selected?.id} />
 
             {/* ── 3. Workflow Builder entry point ── */}
       <WorkflowSection
@@ -787,23 +787,18 @@ function EmailTriggerConfig({ form, setForm, scheduleId }) {
   const set = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }));
   const setBool = (key, val) => setForm(p => ({ ...p, [key]: val }));
 
-  // Test connection — uses saved schedule if id exists, otherwise raw form values
+  // Test connection — always uses current form values (never relies on DB state)
   const handleTest = async () => {
     setTesting(true); setTestStatus(null);
     try {
-      let result;
-      if (scheduleId) {
-        result = await testEmailConnection(scheduleId);
-      } else {
-        result = await testImapTrigger({
-          host:     form.em_host,
-          port:     Number(form.em_port) || 993,
-          use_ssl:  form.em_use_ssl,
-          username: form.em_username,
-          password: form.em_password,
-          mailbox:  form.em_mailbox || "INBOX",
-        });
-      }
+      const result = await testImapTrigger({
+        host:     form.em_host,
+        port:     Number(form.em_port) || 993,
+        use_ssl:  form.em_use_ssl,
+        username: form.em_username,
+        password: form.em_password,
+        mailbox:  form.em_mailbox || "INBOX",
+      });
       setTestStatus(result);
     } catch (e) {
       setTestStatus({ ok: false, message: e.response?.data?.detail || String(e) });
