@@ -7,6 +7,7 @@ export const fetchDomains = () => api.get("/domains/").then(r => r.data);
 export const createDomain = (name, domain_prompt = null) =>
   api.post("/domains/", { name, domain_prompt }).then(r => r.data);
 export const updateDomain = (id, payload) => api.patch(`/domains/${id}`, payload).then(r => r.data);
+export const deleteDomain = (id) => api.delete(`/domains/${id}`);
 
 export const fetchAgents = () => api.get("/agents/").then(r => r.data);
 export const checkAgentName = (name) => api.get("/agents/check-name", { params: { name } }).then(r => r.data);

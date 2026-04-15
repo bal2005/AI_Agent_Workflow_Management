@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import {
   fetchDomains, fetchAgents,
   updateAgent, deleteAgent,
-  updateDomain, createDomain,
+  updateDomain, createDomain, deleteDomain,
 } from "../api";
 
 const s = {
@@ -172,12 +172,30 @@ export default function AdminPanel({ onRefresh }) {
     } finally { setSaving(false); }
   };
 
+  // ── Delete domain ──
+  const handleDeleteDomain = async () => {
+    const agentCount = agentsForDomain(selected.data.id).length;
+    const warning = agentCount > 0
+      ? `This domain has ${agentCount} agent(s) that will also be deleted. `
+      : "";
+    if (!confirm(`${warning}Delete domain "${selected.data.name}"? This cannot be undone.`)) return;
+    try {
+      await deleteDomain(selected.data.id);
+      setSelected(null);
+      setMsg({ type: "", text: "" });
+      await load();
+      if (onRefresh) onRefresh();
+    } catch (e) {
+      setMsg({ type: "error", text: e.response?.data?.detail || "Delete failed" });
+    }
+  };
+
   return (
     <div style={s.layout}>
       {/* ── Left panel ── */}
       <aside style={s.left}>
         <div style={s.leftHeader}>
-          <div style={s.leftTitle}>Admin Panel</div>
+          <div style={s.leftTitle}>Agent Management</div>
           <div style={{ fontSize: 12, color: "#475569" }}>Manage agents &amp; domains</div>
           <input
             style={s.searchInput}
@@ -312,6 +330,9 @@ export default function AdminPanel({ onRefresh }) {
               <div style={{ ...s.row, marginTop: 8 }}>
                 <button style={{ ...s.btn, ...s.btnPrimary }} onClick={handleSaveDomain} disabled={saving}>
                   {saving ? "Saving..." : "Save Domain"}
+                </button>
+                <button style={{ ...s.btn, ...s.btnDanger }} onClick={handleDeleteDomain}>
+                  Delete Domain
                 </button>
               </div>
             </div>

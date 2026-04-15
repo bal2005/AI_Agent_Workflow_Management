@@ -33,7 +33,7 @@ const PAGES = [
   { path: "/run-history", label: "📋 Run History" },
   { path: "/sandbox",     label: "🐳 Sandbox" },
   { path: "/llm",         label: "🧠 LLM Config" },
-  { path: "/admin",       label: "🛠 Admin" },
+  { path: "/admin",       label: "🛠 Agent Management" },
 ];
 
 export default function Navbar() {
